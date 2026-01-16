@@ -41,10 +41,6 @@
   },
   "tools": [
     {
-      "name": "get_neo4j_schema",
-      "description": "Retrieve the schema of the Neo4j database, including node labels, properties, and relationships. Requires that APOC plugin is installed."
-    },
-    {
       "name": "read_neo4j_cypher",
       "description": "Execute read-only Cypher queries (MATCH, RETURN, etc.) on the Neo4j database"
     },
@@ -53,7 +49,20 @@
       "description": "Execute write Cypher queries (CREATE, MERGE, SET, DELETE, etc.) on the Neo4j database"
     }
   ],
-  "prompts": [],
+  "prompts": [
+    {
+      "name": "neo4j_schema_snapshot",
+      "description": "Prompt helper to summarize the Neo4j schema resource."
+    },
+    {
+      "name": "neo4j_label_lookup",
+      "description": "Prompt helper to retrieve nodes by label using the labels resource template."
+    },
+    {
+      "name": "neo4j_core_concepts_prompt",
+      "description": "Prompt helper to explore coreConcept nodes."
+    }
+  ],
   "tools_generated": false,
   "license": "MIT",
   "user_config": {

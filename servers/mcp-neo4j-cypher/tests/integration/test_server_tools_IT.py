@@ -2,16 +2,16 @@ import json
 from typing import Any
 
 import pytest
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_get_neo4j_schema(mcp_server: FastMCP, init_data: Any):
-    tool = await mcp_server.get_tool("get_neo4j_schema")
-    response = await tool.run(dict())
-
-    schema = json.loads(response.content[0].text)
+async def test_get_neo4j_schema_resource(mcp_server: FastMCP, init_data: Any):
+    schema_raw = await mcp_server._resource_manager.read_resource(  # pylint: disable=protected-access
+        "resource://neo4j/schema"
+    )
+    schema = json.loads(schema_raw)
 
     # Verify the schema result
     assert "Person" in schema
@@ -107,19 +107,15 @@ async def test_read_query_with_normal_timeout_succeeds(
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_schema_query_timeout(mcp_server_short_timeout: FastMCP):
-    """Test that schema queries also respect timeout settings."""
-    tool = await mcp_server_short_timeout.get_tool("get_neo4j_schema")
-
-    # Schema query should typically be fast, but with very short timeout it might timeout
-    # depending on the database state. Let's just verify it doesn't crash
+    """Test that schema resource reads also respect timeout settings."""
     try:
-        response = await tool.run(dict())
-        # If it succeeds, verify the response format
-        if response.content[0].text:
-            schema = json.loads(response.content[0].text)
+        schema_raw = await mcp_server_short_timeout._resource_manager.read_resource(  # pylint: disable=protected-access
+            "resource://neo4j/schema"
+        )
+        if schema_raw:
+            schema = json.loads(schema_raw)
             assert isinstance(schema, dict)
-    except ToolError as e:
-        # If it times out, that's also acceptable behavior for this test
+    except ResourceError as e:
         error_message = str(e)
         assert "Neo4j Error" in error_message or "timeout" in error_message.lower()
 

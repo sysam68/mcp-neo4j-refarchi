@@ -42,14 +42,36 @@ The server offers these core tools:
   - Returns: A JSON serialized result summary counter with `{ nodes_updated: number, relationships_created: number, ... }`
   - **Availability**: May be disabled by supplying --read-only as cli flag or `NEO4J_READ_ONLY=true` environment variable
 
-#### 🕸️ Schema Tools
+### 📚 Resources
 
-- `get_neo4j_schema`
-  - Get a list of all nodes types in the graph database, their attributes with name, type and relationships to other node types
-  - Input:
-    - `sample_param` (integer, optional): Number of nodes to sample for schema analysis. Overrides server default if provided.
-  - Returns: JSON serialized list of node labels with two dictionaries: one for attributes and one for relationships
-  - **Performance**: Uses sampling by default (1000 nodes per label). Reduce number for faster analysis on large databases. To stop sampling, set to -1. 
+- `resource://neo4j/schema{?sample_size}`
+  - APOC-derived schema snapshot of the database
+  - Optional query param:
+    - `sample_size` (integer): Sample size for schema inference; use `-1` for full scan
+  - Returns: JSON document of labels, properties, and relationships
+
+- `resource://neo4j/labels`
+  - List all labels present in the database
+  - Returns: JSON array of label strings
+
+- `resource://neo4j/labels/{label}`
+  - Find nodes matching a label name (case-insensitive)
+  - Returns: JSON array of rows containing the matching nodes
+
+- `resource://neo4j/core-concepts`
+  - List nodes labeled `coreConcept`
+  - Returns: JSON array of rows containing coreConcept nodes
+
+### 💬 Prompts
+
+- `neo4j_schema_snapshot`
+  - Summarize the schema using `resource://neo4j/schema{?sample_size}`
+
+- `neo4j_label_lookup`
+  - Retrieve nodes by label using `resource://neo4j/labels/{label}`
+
+- `neo4j_core_concepts_prompt`
+  - Explore coreConcept nodes using `resource://neo4j/core-concepts`
 
 ### 🏷️ Namespacing
 
@@ -107,15 +129,15 @@ When a response exceeds the token limit, it will be automatically truncated to f
 - **Cost Control**: Prevents excessive token usage in AI interactions  
 - **Reliability**: Large datasets don't break the conversation flow
 
-**Note**: Token limits only apply to `read_neo4j_cypher` responses. Schema queries and write operations return summary information and are not affected.
+**Note**: Token limits only apply to `read_neo4j_cypher` responses. Resource reads and write operations are not truncated by this setting.
 
 #### 🔍 Schema Sampling
 
-Control the performance and scope of schema inspection with the `sample` parameter for the `get_neo4j_schema` tool:
+Control the performance and scope of schema inspection with the default schema sample size and the `sample_size` query parameter on the schema resource:
 
 **Command Line:**
 ```bash
-mcp-neo4j-cypher --sample 1000  # Sample 1000 nodes per label
+mcp-neo4j-cypher --schema-sample-size 1000  # Sample 1000 nodes per label
 ```
 
 **Environment Variable:**
@@ -128,13 +150,13 @@ export NEO4J_SCHEMA_SAMPLE_SIZE=1000
 docker run -e NEO4J_SCHEMA_SAMPLE_SIZE=1000 mcp-neo4j-cypher:latest
 ```
 
-The `sample` parameter controls how many nodes are examined when generating the database schema:
+The `sample_size` parameter controls how many nodes are examined when generating the database schema:
 
 - **Default**: `1000` nodes per label are sampled for schema analysis
 - **Performance**: Lower values (`100`, `500`) provide faster schema inspection on large databases
 - **Accuracy**: Higher values (`5000`, `10000`) provide more comprehensive schema coverage
 - **Full Scan**: Set to `-1` to examine all nodes (can be very slow on large databases)
-- **Per-Call Override**: The `get_neo4j_schema` tool accepts a `sample_param` parameter to override the server default
+- **Per-Call Override**: Use `resource://neo4j/schema?sample_size=...` to override the server default
 
 **How Sampling Works** (via [APOC's apoc.meta.schema](https://neo4j.com/docs/apoc/current/overview/apoc.meta/apoc.meta.schema/)):
 
@@ -341,7 +363,7 @@ Here's an example of connecting to multiple Neo4j databases using namespaces:
 In this setup:
 
 - The movies database tools will be prefixed with `movies-` (e.g., `movies-read_neo4j_cypher`)
-- The local database tools will be prefixed with `local-` (e.g., `local-get_neo4j_schema`)
+- The local database tools will be prefixed with `local-` (e.g., `local-read_neo4j_cypher`)
 
 Syntax with `--db-url`, `--username`, `--password`, `--read-timeout` and other command line arguments is still supported but environment variables are preferred:
 

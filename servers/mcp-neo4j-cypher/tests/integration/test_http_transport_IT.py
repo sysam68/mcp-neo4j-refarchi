@@ -45,7 +45,6 @@ async def test_http_tools_list(http_server):
             tools = result["result"]["tools"]
             assert len(tools) > 0
             tool_names = [tool["name"] for tool in tools]
-            assert "get_neo4j_schema" in tool_names
             assert "read_neo4j_cypher" in tool_names
             assert "write_neo4j_cypher" in tool_names
 
@@ -78,7 +77,6 @@ async def test_http_tools_list_read_only_mode(http_server_read_only):
             tool_names = [tool["name"] for tool in tools]
 
             # Read tools should be available
-            assert "get_neo4j_schema" in tool_names
             assert "read_neo4j_cypher" in tool_names
 
             # Write tools should NOT be available in read-only mode
@@ -155,16 +153,16 @@ async def test_http_read_tool_call_read_only_mode(http_server_read_only):
 
 
 @pytest.mark.asyncio
-async def test_http_get_schema(http_server):
-    """Test that get_neo4j_schema works over HTTP."""
+async def test_http_read_schema_resource(http_server):
+    """Test that schema resource reads work over HTTP."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "http://127.0.0.1:8001/mcp/",
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "tools/call",
-                "params": {"name": "get_neo4j_schema", "arguments": {}},
+                "method": "resources/read",
+                "params": {"uri": "resource://neo4j/schema"},
             },
             headers={
                 "Accept": "application/json, text/event-stream",
@@ -175,8 +173,8 @@ async def test_http_get_schema(http_server):
             result = await parse_sse_response(response)
             assert response.status == 200
             assert "result" in result
-            assert "content" in result["result"]
-            assert len(result["result"]["content"]) > 0
+            assert "contents" in result["result"]
+            assert len(result["result"]["contents"]) > 0
 
 
 @pytest.mark.asyncio

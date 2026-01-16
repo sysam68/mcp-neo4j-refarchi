@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Any, Literal, Optional
 
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
 from fastmcp.tools.tool import TextContent, ToolResult
 from mcp.types import ToolAnnotations
@@ -53,125 +53,298 @@ def create_mcp_server(
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
 
-    @mcp.tool(
-        name=namespace_prefix + "get_neo4j_schema",
-        annotations=ToolAnnotations(
-            title="Get Neo4j Schema",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=True,
-        ),
+    async def _execute_read_query(
+        query: str, params: Optional[dict[str, Any]] = None
+    ) -> list[dict[str, Any]]:
+        query_obj = Query(query, timeout=float(read_timeout))
+        return await neo4j_driver.execute_query(
+            query_obj,
+            parameters_=params or {},
+            routing_control=RoutingControl.READ,
+            database_=database,
+            result_transformer_=lambda r: r.data(),
+        )
+
+    def _clean_schema(schema: dict) -> dict:
+        cleaned = {}
+
+        for key, entry in schema.items():
+            new_entry = {"type": entry["type"]}
+            if "count" in entry:
+                new_entry["count"] = entry["count"]
+
+            labels = entry.get("labels", [])
+            if labels:
+                new_entry["labels"] = labels
+
+            props = entry.get("properties", {})
+            clean_props = {}
+            for pname, pinfo in props.items():
+                cp = {}
+                if "indexed" in pinfo:
+                    cp["indexed"] = pinfo["indexed"]
+                if "type" in pinfo:
+                    cp["type"] = pinfo["type"]
+                if cp:
+                    clean_props[pname] = cp
+            if clean_props:
+                new_entry["properties"] = clean_props
+
+            if entry.get("relationships"):
+                rels_out = {}
+                for rel_name, rel in entry["relationships"].items():
+                    cr = {}
+                    if "direction" in rel:
+                        cr["direction"] = rel["direction"]
+                    # nested labels
+                    rlabels = rel.get("labels", [])
+                    if rlabels:
+                        cr["labels"] = rlabels
+                    # nested properties
+                    rprops = rel.get("properties", {})
+                    clean_rprops = {}
+                    for rpname, rpinfo in rprops.items():
+                        crp = {}
+                        if "indexed" in rpinfo:
+                            crp["indexed"] = rpinfo["indexed"]
+                        if "type" in rpinfo:
+                            crp["type"] = rpinfo["type"]
+                        if crp:
+                            clean_rprops[rpname] = crp
+                    if clean_rprops:
+                        cr["properties"] = clean_rprops
+
+                    if cr:
+                        rels_out[rel_name] = cr
+
+                if rels_out:
+                    new_entry["relationships"] = rels_out
+
+            cleaned[key] = new_entry
+
+        return cleaned
+
+    @mcp.resource(
+        "resource://neo4j/schema{?sample_size}",
+        name="neo4j_schema",
+        title="Neo4j Schema",
+        description="APOC-derived schema snapshot of the Neo4j database.",
+        mime_type="application/json",
     )
-    async def get_neo4j_schema(sample_size: int = Field(default=config_sample_size, description="The sample size used to infer the graph schema. Larger samples are slower, but more accurate. Smaller samples are faster, but might miss information.")) -> list[ToolResult]:
+    async def neo4j_schema(
+        sample_size: int = Field(
+            default=config_sample_size,
+            description=(
+                "Sample size used for APOC schema inference. Use -1 for full scan."
+            ),
+        ),
+    ) -> dict[str, Any]:
         """
         Returns nodes, their properties (with types and indexed flags), and relationships
         using APOC's schema inspection.
 
-        You should only provide a `sample_size` value if requested by the user, or tuning the retrieval performance.
-
         Performance Notes:
-            - If `sample_size` is not provided, uses the server's default sample setting defined in the server configuration.
-            - If retrieving the schema times out, try lowering the sample size, e.g. `sample_size=100`.
+            - If `sample_size` is not provided, uses the server's default sample setting.
+            - If retrieving the schema times out, try lowering the sample size.
             - To sample the entire graph use `sample_size=-1`.
         """
 
-        # Use provided sample_size, otherwise fall back to server default - 1000
         effective_sample_size = sample_size if sample_size else config_sample_size
+        logger.info(
+            "Reading Neo4j schema resource with sample size "
+            f"{effective_sample_size}."
+        )
 
-        logger.info(f"Running `get_neo4j_schema` with sample size {effective_sample_size}.")
-
-        get_schema_query = f"CALL apoc.meta.schema({{sample: {effective_sample_size}}}) YIELD value RETURN value"
-
-        def clean_schema(schema: dict) -> dict:
-            cleaned = {}
-
-            for key, entry in schema.items():
-                new_entry = {"type": entry["type"]}
-                if "count" in entry:
-                    new_entry["count"] = entry["count"]
-
-                labels = entry.get("labels", [])
-                if labels:
-                    new_entry["labels"] = labels
-
-                props = entry.get("properties", {})
-                clean_props = {}
-                for pname, pinfo in props.items():
-                    cp = {}
-                    if "indexed" in pinfo:
-                        cp["indexed"] = pinfo["indexed"]
-                    if "type" in pinfo:
-                        cp["type"] = pinfo["type"]
-                    if cp:
-                        clean_props[pname] = cp
-                if clean_props:
-                    new_entry["properties"] = clean_props
-
-                if entry.get("relationships"):
-                    rels_out = {}
-                    for rel_name, rel in entry["relationships"].items():
-                        cr = {}
-                        if "direction" in rel:
-                            cr["direction"] = rel["direction"]
-                        # nested labels
-                        rlabels = rel.get("labels", [])
-                        if rlabels:
-                            cr["labels"] = rlabels
-                        # nested properties
-                        rprops = rel.get("properties", {})
-                        clean_rprops = {}
-                        for rpname, rpinfo in rprops.items():
-                            crp = {}
-                            if "indexed" in rpinfo:
-                                crp["indexed"] = rpinfo["indexed"]
-                            if "type" in rpinfo:
-                                crp["type"] = rpinfo["type"]
-                            if crp:
-                                clean_rprops[rpname] = crp
-                        if clean_rprops:
-                            cr["properties"] = clean_rprops
-
-                        if cr:
-                            rels_out[rel_name] = cr
-
-                    if rels_out:
-                        new_entry["relationships"] = rels_out
-
-                cleaned[key] = new_entry
-
-            return cleaned
+        get_schema_query = (
+            "CALL apoc.meta.schema({sample: "
+            f"{effective_sample_size}"
+            "}) YIELD value RETURN value"
+        )
 
         try:
-            results_json = await neo4j_driver.execute_query(
-                get_schema_query,
-                routing_control=RoutingControl.READ,
-                database_=database,
-                result_transformer_=lambda r: r.data(),
-            )
-        
-            logger.debug(f"Read query returned {len(results_json)} rows")
+            results_json = await _execute_read_query(get_schema_query)
+            logger.debug(f"Schema query returned {len(results_json)} rows")
 
-            schema_clean = clean_schema(results_json[0].get("value"))
+            schema_clean = _clean_schema(results_json[0].get("value"))
 
-            schema_clean_str = json.dumps(schema_clean, default=str)
-
-            return ToolResult(content=[TextContent(type="text", text=schema_clean_str)])
+            return schema_clean
 
         except ClientError as e:
             if "Neo.ClientError.Procedure.ProcedureNotFound" in str(e):
-                raise ToolError(
-                    "Neo4j Client Error: This instance of Neo4j does not have the APOC plugin installed. Please install and enable the APOC plugin to use the `get_neo4j_schema` tool."
+                raise ResourceError(
+                    "Neo4j Client Error: This instance of Neo4j does not have the APOC "
+                    "plugin installed. Please install and enable the APOC plugin to "
+                    "use the `resource://neo4j/schema` resource."
                 )
-            else:
-                raise ToolError(f"Neo4j Client Error: {e}")
+            raise ResourceError(f"Neo4j Client Error: {e}")
 
         except Neo4jError as e:
-            raise ToolError(f"Neo4j Error: {e}")
+            raise ResourceError(f"Neo4j Error: {e}")
 
         except Exception as e:
-            logger.error(f"Error retrieving Neo4j database schema: {e}")
-            raise ToolError(f"Unexpected Error: {e}")
+            logger.error(f"Error retrieving Neo4j schema resource: {e}")
+            raise ResourceError(f"Unexpected Error: {e}")
+
+    @mcp.resource(
+        "resource://neo4j/labels",
+        name="neo4j_labels",
+        title="Neo4j Labels",
+        description="List all labels present in the database.",
+        mime_type="application/json",
+    )
+    async def neo4j_labels() -> list[str]:
+        """List all labels in the Neo4j database."""
+
+        get_labels_query = "CALL db.labels()"
+
+        try:
+            results = await _execute_read_query(get_labels_query)
+            labels = [row.get("label") for row in results if "label" in row]
+            logger.debug(f"Label resource returned {len(labels)} labels")
+            return labels
+
+        except Neo4jError as e:
+            logger.error(
+                f"Neo4j Error executing label resource query: {e}\n{get_labels_query}"
+            )
+            raise ResourceError(f"Neo4j Error: {e}\n{get_labels_query}")
+
+        except Exception as e:
+            logger.error(
+                f"Error executing label resource query: {e}\n{get_labels_query}"
+            )
+            raise ResourceError(f"Error: {e}\n{get_labels_query}")
+
+    @mcp.resource(
+        "resource://neo4j/labels/{label}",
+        name="neo4j_label_nodes",
+        title="Neo4j Label Nodes",
+        description="Nodes matching a label name (case-insensitive).",
+        mime_type="application/json",
+    )
+    async def neo4j_label_nodes(
+        label: str = Field(
+            ...,
+            description="Label name to match (case-insensitive).",
+        ),
+    ) -> list[dict[str, Any]]:
+        """Find nodes that match a label name, case-insensitively."""
+
+        get_labels_by_name_query = """
+WITH toLower($targetLabel) AS targetLabelLower
+MATCH (n)
+WHERE any(label IN labels(n)
+          WHERE toLower(label) = targetLabelLower)
+RETURN n
+"""
+
+        try:
+            results = await _execute_read_query(
+                get_labels_by_name_query, {"targetLabel": label}
+            )
+            sanitized_results = [_value_sanitize(el) for el in results]
+            logger.debug(
+                "Label resource query returned "
+                f"{len(sanitized_results)} rows"
+            )
+            return sanitized_results
+
+        except Neo4jError as e:
+            logger.error(
+                "Neo4j Error executing label resource query: "
+                f"{e}\n{get_labels_by_name_query}\n{label}"
+            )
+            raise ResourceError(
+                f"Neo4j Error: {e}\n{get_labels_by_name_query}\n{label}"
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error executing label resource query: "
+                f"{e}\n{get_labels_by_name_query}\n{label}"
+            )
+            raise ResourceError(
+                f"Error: {e}\n{get_labels_by_name_query}\n{label}"
+            )
+
+    @mcp.resource(
+        "resource://neo4j/core-concepts",
+        name="neo4j_core_concepts",
+        title="Neo4j Core Concepts",
+        description="List nodes labeled coreConcept.",
+        mime_type="application/json",
+    )
+    async def neo4j_core_concepts() -> list[dict[str, Any]]:
+        """List coreConcept nodes from the Neo4j database."""
+
+        get_core_concept_query = "MATCH (n:coreConcept) RETURN n"
+
+        try:
+            results = await _execute_read_query(get_core_concept_query)
+            sanitized_results = [_value_sanitize(el) for el in results]
+            logger.debug(
+                "Core concept resource returned "
+                f"{len(sanitized_results)} rows"
+            )
+            return sanitized_results
+
+        except Neo4jError as e:
+            logger.error(
+                "Neo4j Error executing core concept resource query: "
+                f"{e}\n{get_core_concept_query}"
+            )
+            raise ResourceError(f"Neo4j Error: {e}\n{get_core_concept_query}")
+
+        except Exception as e:
+            logger.error(
+                "Error executing core concept resource query: "
+                f"{e}\n{get_core_concept_query}"
+            )
+            raise ResourceError(f"Error: {e}\n{get_core_concept_query}")
+
+    @mcp.prompt(title="Neo4j Schema Snapshot")
+    def neo4j_schema_snapshot(
+        sample_size: int = Field(
+            default=config_sample_size,
+            description=(
+                "Sample size used for APOC schema inference. Use -1 for full scan."
+            ),
+        ),
+    ) -> str:
+        """Prompt helper to summarize the Neo4j schema resource."""
+
+        return (
+            "Use the Neo4j schema resource to understand labels, properties, and "
+            "relationships. Read:\n"
+            f"resource://neo4j/schema?sample_size={sample_size}\n\n"
+            "Then summarize the key node labels, relationship types, and indexed "
+            "properties."
+        )
+
+    @mcp.prompt(title="Neo4j Label Lookup")
+    def neo4j_label_lookup(
+        label: str = Field(
+            ...,
+            description="Label name to match (case-insensitive).",
+        ),
+    ) -> str:
+        """Prompt helper to retrieve nodes by label."""
+
+        return (
+            "Read nodes for the requested label using the resource template:\n"
+            f"resource://neo4j/labels/{label}\n\n"
+            "Then summarize the key properties found on those nodes."
+        )
+
+    @mcp.prompt(title="Neo4j Core Concepts")
+    def neo4j_core_concepts_prompt() -> str:
+        """Prompt helper to explore coreConcept nodes."""
+
+        return (
+            "Read core concepts using the resource:\n"
+            "resource://neo4j/core-concepts\n\n"
+            "Then summarize the coreConcept nodes and their key properties."
+        )
 
     @mcp.tool(
         name=namespace_prefix + "read_neo4j_cypher",

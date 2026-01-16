@@ -21,21 +21,21 @@ COPY README.md /app/
 RUN pip install --no-cache-dir -e .
 
 # adding comment to trigger Docker hub build
-
-# Environment variables for Neo4j connection
-ENV NEO4J_URI="bolt://host.docker.internal:7687"
+ENV NEO4J_LOG_LEVEL="debug"
+ENV NEO4J_TZ="Europe/Paris"
+ENV NEO4J_URI="bolt://neo4j-prod:7687"
 ENV NEO4J_USERNAME="neo4j"
-ENV NEO4J_PASSWORD="password"
+ENV NEO4J_PASSWORD="neo4refarchi"
 ENV NEO4J_DATABASE="neo4j"
-ENV NEO4J_NAMESPACE=""
-ENV NEO4J_TRANSPORT="stdio"
+ENV NEO4J_NAMESPACE="local"
+ENV NEO4J_TRANSPORT="http"
 ENV NEO4J_MCP_SERVER_HOST="0.0.0.0"
-ENV NEO4J_MCP_SERVER_PORT="8000"
+ENV NEO4J_MCP_SERVER_PORT=8765
 ENV NEO4J_MCP_SERVER_PATH="/api/mcp/"
-ENV NEO4J_MCP_SERVER_ALLOW_ORIGINS=""
-ENV NEO4J_MCP_SERVER_ALLOWED_HOSTS="localhost,127.0.0.1"
+ENV NEO4J_MCP_SERVER_ALLOW_ORIGINS="*"
+ENV NEO4J_MCP_SERVER_ALLOWED_HOSTS="*"
 
-EXPOSE 8000
+EXPOSE 8765
 
 # Command to run the server using the package entry point
 CMD ["sh", "-c", "mcp-neo4j-cypher"]
