@@ -779,7 +779,7 @@ def test_sample_invalid_env_var(clean_env, args_factory, mock_logger):
     config = process_config(args_factory())
     
     # Should default to None and log warning
-    assert config["sa"] is None
+    assert config["schema_sample_size"] is None
     mock_logger.warning.assert_called_with(
         "Warning: Invalid sample size provided in NEO4J_SCHEMA_SAMPLE_SIZE environment variable. No default sample will be used."
     )

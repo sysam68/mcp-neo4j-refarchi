@@ -1,0 +1,68 @@
+openapi: 3.0.3
+info:
+  title: MCP Server Startup Contracts
+  version: 1.0.0
+paths:
+  /status:
+    get:
+      summary: Server readiness status
+      responses:
+        "200":
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartupStatus"
+        "500":
+          description: Server failed to start
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartupError"
+  /tools:
+    get:
+      summary: Tool metadata listing
+      responses:
+        "200":
+          description: Tool metadata returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolDescriptor"
+components:
+  schemas:
+    StartupStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, failed]
+        timestamp:
+          type: string
+          format: date-time
+        message:
+          type: string
+      required: [status, timestamp]
+    StartupError:
+      type: object
+      properties:
+        error_code:
+          type: string
+        summary:
+          type: string
+        resolution_hint:
+          type: string
+      required: [error_code, summary]
+    ToolDescriptor:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+      required: [name]

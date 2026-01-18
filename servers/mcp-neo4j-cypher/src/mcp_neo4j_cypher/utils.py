@@ -42,7 +42,7 @@ def parse_boolean_safely(value: Union[str, bool]) -> bool:
         raise ValueError(f"Invalid boolean value: '{value}'. Must be 'true' or 'false'")
 
 
-def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]:
+def process_config(args: argparse.Namespace) -> dict[str, Any]:
     """
     Process the command line arguments and environment variables to create a config dictionary.
     This may then be used as input to the main server function.
@@ -161,12 +161,13 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
             )
         config["port"] = args.server_port
     else:
-        if os.getenv("NEO4J_MCP_SERVER_PORT") is not None:
+        env_port = os.getenv("NEO4J_MCP_SERVER_PORT")
+        if env_port is not None:
             if config["transport"] == "stdio":
                 logger.warning(
                     "Warning: Server port provided, but transport is `stdio`. The `NEO4J_MCP_SERVER_PORT` environment variable will be set, but ignored."
                 )
-            config["port"] = int(os.getenv("NEO4J_MCP_SERVER_PORT"))
+            config["port"] = int(env_port)
         elif config["transport"] != "stdio":
             logger.warning(
                 "Warning: No server port provided and transport is not `stdio`. Using default server port: 8000"
@@ -186,12 +187,13 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
             )
         config["path"] = args.server_path
     else:
-        if os.getenv("NEO4J_MCP_SERVER_PATH") is not None:
+        env_path = os.getenv("NEO4J_MCP_SERVER_PATH")
+        if env_path is not None:
             if config["transport"] == "stdio":
                 logger.warning(
                     "Warning: Server path provided, but transport is `stdio`. The `NEO4J_MCP_SERVER_PATH` environment variable will be set, but ignored."
                 )
-            config["path"] = os.getenv("NEO4J_MCP_SERVER_PATH")
+            config["path"] = env_path
         elif config["transport"] != "stdio":
             logger.warning(
                 "Warning: No server path provided and transport is not `stdio`. Using default server path: /mcp/"
@@ -212,11 +214,12 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
         ]
 
     else:
-        if os.getenv("NEO4J_MCP_SERVER_ALLOW_ORIGINS") is not None:
+        env_allow_origins = os.getenv("NEO4J_MCP_SERVER_ALLOW_ORIGINS")
+        if env_allow_origins is not None:
             # split comma-separated string into list
             config["allow_origins"] = [
                 origin.strip()
-                for origin in os.getenv("NEO4J_MCP_SERVER_ALLOW_ORIGINS", "").split(",")
+                for origin in env_allow_origins.split(",")
                 if origin.strip()
             ]
         else:
@@ -233,12 +236,11 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
         ]
 
     else:
-        if os.getenv("NEO4J_MCP_SERVER_ALLOWED_HOSTS") is not None:
+        env_allowed_hosts = os.getenv("NEO4J_MCP_SERVER_ALLOWED_HOSTS")
+        if env_allowed_hosts is not None:
             # split comma-separated string into list
             config["allowed_hosts"] = [
-                host.strip()
-                for host in os.getenv("NEO4J_MCP_SERVER_ALLOWED_HOSTS", "").split(",")
-                if host.strip()
+                host.strip() for host in env_allowed_hosts.split(",") if host.strip()
             ]
         else:
             logger.info(
@@ -250,8 +252,9 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
     if args.token_limit is not None:
         config["token_limit"] = args.token_limit
     else:
-        if os.getenv("NEO4J_RESPONSE_TOKEN_LIMIT") is not None:
-            config["token_limit"] = int(os.getenv("NEO4J_RESPONSE_TOKEN_LIMIT"))
+        env_token_limit = os.getenv("NEO4J_RESPONSE_TOKEN_LIMIT")
+        if env_token_limit is not None:
+            config["token_limit"] = int(env_token_limit)
             logger.info(
                 f"Info: Cypher read query token limit provided. Using provided value: {config['token_limit']} tokens"
             )
@@ -263,9 +266,10 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
     if args.read_timeout is not None:
         config["read_timeout"] = args.read_timeout
     else:
-        if os.getenv("NEO4J_READ_TIMEOUT") is not None:
+        env_read_timeout = os.getenv("NEO4J_READ_TIMEOUT")
+        if env_read_timeout is not None:
             try:
-                config["read_timeout"] = int(os.getenv("NEO4J_READ_TIMEOUT"))
+                config["read_timeout"] = int(env_read_timeout)
                 logger.info(
                     f"Info: Cypher read query timeout provided. Using provided value: {config['read_timeout']} seconds"
                 )
@@ -286,7 +290,8 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
             f"Info: Read-only mode set to {config['read_only']} via command line argument."
         )
     elif os.getenv("NEO4J_READ_ONLY") is not None:
-        config["read_only"] = parse_boolean_safely(os.getenv("NEO4J_READ_ONLY"))
+        env_read_only = os.getenv("NEO4J_READ_ONLY")
+        config["read_only"] = parse_boolean_safely(env_read_only or "")
         logger.info(
             f"Info: Read-only mode set to {config['read_only']} via environment variable."
         )
@@ -297,15 +302,20 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
         config["read_only"] = False
 
     # parse schema sample size
-    if args.schema_sample_size is not None:
-        config["schema_sample_size"] = args.schema_sample_size
+    sample_cli = getattr(args, "schema_sample_size", None)
+    if sample_cli is None:
+        sample_cli = getattr(args, "sample", None)
+
+    if sample_cli is not None:
+        config["schema_sample_size"] = sample_cli
         logger.info(
             f"Info: Default sample size set to {config['schema_sample_size']} via command line argument."
         )
     else:
-        if os.getenv("NEO4J_SCHEMA_SAMPLE_SIZE") is not None:
+        env_schema_sample = os.getenv("NEO4J_SCHEMA_SAMPLE_SIZE")
+        if env_schema_sample is not None:
             try:
-                config["schema_sample_size"] = int(os.getenv("NEO4J_SCHEMA_SAMPLE_SIZE"))
+                config["schema_sample_size"] = int(env_schema_sample)
                 logger.info(
                     f"Info: Default sample size set to {config['schema_sample_size']} via environment variable."
                 )
@@ -313,12 +323,12 @@ def process_config(args: argparse.Namespace) -> dict[str, Union[str, int, None]]
                 logger.warning(
                     "Warning: Invalid sample size provided in NEO4J_SCHEMA_SAMPLE_SIZE environment variable. No default sample will be used."
                 )
-                config["schema_sample_size"] = 1000
+                config["schema_sample_size"] = None
         else:
             logger.info(
                 "Info: No default sample size provided. Schema operations will scan entire graph unless explicitly specified."
             )
-            config["schema_sample_size"] = 1000
+            config["schema_sample_size"] = None
 
     return config
 

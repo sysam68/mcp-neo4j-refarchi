@@ -1,12 +1,12 @@
 import json
 import logging
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Literal, LiteralString, Optional, cast
 
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
-from fastmcp.tools.tool import TextContent, ToolResult
-from mcp.types import ToolAnnotations
+from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
+from mcp.types import TextContent, ToolAnnotations
 from neo4j import AsyncDriver, AsyncGraphDatabase, Query, RoutingControl
 from neo4j.exceptions import ClientError, Neo4jError
 from pydantic import Field
@@ -17,6 +17,10 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .utils import _truncate_string_to_tokens, _value_sanitize
 
 logger = logging.getLogger("mcp_neo4j_cypher")
+TOOL_NAMES = {
+    "read": "read_neo4j_cypher",
+    "write": "write_neo4j_cypher",
+}
 
 
 def _format_namespace(namespace: str) -> str:
@@ -37,6 +41,18 @@ def _is_write_query(query: str) -> bool:
     )
 
 
+def _format_startup_error(exc: Exception) -> str:
+    if isinstance(exc, TypeError) and "FastMCP" in str(exc):
+        return (
+            "Startup failed: FastMCP initialization rejected an unsupported argument. "
+            "Ensure the server uses the supported FastMCP constructor for the installed version."
+        )
+    return (
+        "Startup failed during server initialization. "
+        f"Reason: {exc.__class__.__name__}."
+    )
+
+
 def create_mcp_server(
     neo4j_driver: AsyncDriver,
     database: str = "neo4j",
@@ -46,9 +62,7 @@ def create_mcp_server(
     read_only: bool = False,
     config_sample_size: int = 1000,
 ) -> FastMCP:
-    mcp: FastMCP = FastMCP(
-        "mcp-neo4j-cypher", dependencies=["neo4j", "pydantic"], stateless_http=True
-    )
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
@@ -56,7 +70,7 @@ def create_mcp_server(
     async def _execute_read_query(
         query: str, params: Optional[dict[str, Any]] = None
     ) -> list[dict[str, Any]]:
-        query_obj = Query(query, timeout=float(read_timeout))
+        query_obj = Query(cast(LiteralString, query), timeout=float(read_timeout))
         return await neo4j_driver.execute_query(
             query_obj,
             parameters_=params or {},
@@ -124,31 +138,7 @@ def create_mcp_server(
 
         return cleaned
 
-    @mcp.resource(
-        "resource://neo4j/schema{?sample_size}",
-        name="neo4j_schema",
-        title="Neo4j Schema",
-        description="APOC-derived schema snapshot of the Neo4j database.",
-        mime_type="application/json",
-    )
-    async def neo4j_schema(
-        sample_size: int = Field(
-            default=config_sample_size,
-            description=(
-                "Sample size used for APOC schema inference. Use -1 for full scan."
-            ),
-        ),
-    ) -> dict[str, Any]:
-        """
-        Returns nodes, their properties (with types and indexed flags), and relationships
-        using APOC's schema inspection.
-
-        Performance Notes:
-            - If `sample_size` is not provided, uses the server's default sample setting.
-            - If retrieving the schema times out, try lowering the sample size.
-            - To sample the entire graph use `sample_size=-1`.
-        """
-
+    async def _read_schema(sample_size: int) -> dict[str, Any]:
         effective_sample_size = sample_size if sample_size else config_sample_size
         logger.info(
             "Reading Neo4j schema resource with sample size "
@@ -165,7 +155,8 @@ def create_mcp_server(
             results_json = await _execute_read_query(get_schema_query)
             logger.debug(f"Schema query returned {len(results_json)} rows")
 
-            schema_clean = _clean_schema(results_json[0].get("value"))
+            raw_schema = results_json[0].get("value") or {}
+            schema_clean = _clean_schema(cast(dict, raw_schema))
 
             return schema_clean
 
@@ -186,6 +177,38 @@ def create_mcp_server(
             raise ResourceError(f"Unexpected Error: {e}")
 
     @mcp.resource(
+        "resource://neo4j/schema",
+        name="neo4j_schema",
+        title="Neo4j Schema",
+        description="APOC-derived schema snapshot of the Neo4j database.",
+        mime_type="application/json",
+    )
+    async def neo4j_schema_default() -> dict[str, Any]:
+        """Return a schema snapshot using the server's default sample size."""
+        return await _read_schema(config_sample_size)
+
+    @mcp.resource(
+        "resource://neo4j/schema/{sample_size}",
+        name="neo4j_schema_sampled",
+        title="Neo4j Schema (Sampled)",
+        description="APOC-derived schema snapshot with explicit sample size.",
+        mime_type="application/json",
+    )
+    async def neo4j_schema(
+        sample_size: int = Field(
+            ...,
+            description=(
+                "Sample size used for APOC schema inference. Use -1 for full scan."
+            ),
+        ),
+    ) -> dict[str, Any]:
+        """
+        Returns nodes, their properties (with types and indexed flags), and relationships
+        using APOC's schema inspection.
+        """
+        return await _read_schema(sample_size)
+
+    @mcp.resource(
         "resource://neo4j/labels",
         name="neo4j_labels",
         title="Neo4j Labels",
@@ -199,7 +222,11 @@ def create_mcp_server(
 
         try:
             results = await _execute_read_query(get_labels_query)
-            labels = [row.get("label") for row in results if "label" in row]
+            labels = [
+                row["label"]
+                for row in results
+                if isinstance(row.get("label"), str)
+            ]
             logger.debug(f"Label resource returned {len(labels)} labels")
             return labels
 
@@ -316,7 +343,7 @@ RETURN n
         return (
             "Use the Neo4j schema resource to understand labels, properties, and "
             "relationships. Read:\n"
-            f"resource://neo4j/schema?sample_size={sample_size}\n\n"
+            f"resource://neo4j/schema/{sample_size}\n\n"
             "Then summarize the key node labels, relationship types, and indexed "
             "properties."
         )
@@ -347,7 +374,7 @@ RETURN n
         )
 
     @mcp.tool(
-        name=namespace_prefix + "read_neo4j_cypher",
+        name=namespace_prefix + TOOL_NAMES["read"],
         annotations=ToolAnnotations(
             title="Read Neo4j Cypher",
             readOnlyHint=True,
@@ -361,14 +388,14 @@ RETURN n
         params: dict[str, Any] = Field(
             dict(), description="The parameters to pass to the Cypher query."
         ),
-    ) -> list[ToolResult]:
+    ) -> ToolResult:
         """Execute a read Cypher query on the neo4j database."""
 
         if _is_write_query(query):
             raise ValueError("Only MATCH queries are allowed for read-query")
 
         try:
-            query_obj = Query(query, timeout=float(read_timeout))
+            query_obj = Query(cast(LiteralString, query), timeout=float(read_timeout))
             results = await neo4j_driver.execute_query(
                 query_obj,
                 parameters_=params,
@@ -385,7 +412,14 @@ RETURN n
 
             logger.debug(f"Read query returned {len(results_json_str)} rows")
 
-            return ToolResult(content=[TextContent(type="text", text=results_json_str)])
+            return ToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=cast(LiteralString, results_json_str),
+                    )
+                ]
+            )
 
         except Neo4jError as e:
             logger.error(f"Neo4j Error executing read query: {e}\n{query}\n{params}")
@@ -396,7 +430,7 @@ RETURN n
             raise ToolError(f"Error: {e}\n{query}\n{params}")
 
     @mcp.tool(
-        name=namespace_prefix + "write_neo4j_cypher",
+        name=namespace_prefix + TOOL_NAMES["write"],
         annotations=ToolAnnotations(
             title="Write Neo4j Cypher",
             readOnlyHint=False,
@@ -411,15 +445,16 @@ RETURN n
         params: dict[str, Any] = Field(
             dict(), description="The parameters to pass to the Cypher query."
         ),
-    ) -> list[ToolResult]:
+    ) -> ToolResult:
         """Execute a write Cypher query on the neo4j database."""
 
         if not _is_write_query(query):
             raise ValueError("Only write queries are allowed for write-query")
 
         try:
+            query_obj = Query(cast(LiteralString, query))
             _, summary, _ = await neo4j_driver.execute_query(
-                query,
+                query_obj,
                 parameters_=params,
                 routing_control=RoutingControl.WRITE,
                 database_=database,
@@ -430,7 +465,12 @@ RETURN n
             logger.debug(f"Write query affected {counters_json_str}")
 
             return ToolResult(
-                content=[TextContent(type="text", text=counters_json_str)]
+                content=[
+                    TextContent(
+                        type="text",
+                        text=cast(LiteralString, counters_json_str),
+                    )
+                ]
             )
 
         except Neo4jError as e:
@@ -451,9 +491,9 @@ async def main(
     database: str,
     transport: Literal["stdio", "sse", "http"] = "stdio",
     namespace: str = "",
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    path: str = "/mcp/",
+    host: Optional[str] = "127.0.0.1",
+    port: Optional[int] = 8000,
+    path: Optional[str] = "/mcp/",
     allow_origins: list[str] = [],
     allowed_hosts: list[str] = [],
     read_timeout: int = 30,
@@ -480,30 +520,51 @@ async def main(
         Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts),
     ]
 
-    mcp = create_mcp_server(
-        neo4j_driver, database, namespace, read_timeout, token_limit, read_only, schema_sample_size
-    )
+    try:
+        mcp = create_mcp_server(
+            neo4j_driver,
+            database,
+            namespace,
+            read_timeout,
+            token_limit,
+            read_only,
+            schema_sample_size if schema_sample_size is not None else 1000,
+        )
+    except Exception as exc:
+        message = _format_startup_error(exc)
+        logger.error(message)
+        await neo4j_driver.close()
+        raise RuntimeError(message) from exc
 
     # Run the server with the specified transport
     match transport:
         case "http":
+            http_host = host or "127.0.0.1"
+            http_port = port or 8000
+            http_path = path or "/mcp/"
             logger.info(
-                f"Running Neo4j Cypher MCP Server with HTTP transport on {host}:{port}..."
+                f"Running Neo4j Cypher MCP Server with HTTP transport on {http_host}:{http_port}..."
             )
             await mcp.run_http_async(
-                host=host, port=port, path=path, middleware=custom_middleware
+                host=http_host,
+                port=http_port,
+                path=http_path,
+                middleware=custom_middleware,
             )
         case "stdio":
             logger.info("Running Neo4j Cypher MCP Server with stdio transport...")
             await mcp.run_stdio_async()
         case "sse":
+            sse_host = host or "127.0.0.1"
+            sse_port = port or 8000
+            sse_path = path or "/mcp/"
             logger.info(
-                f"Running Neo4j Cypher MCP Server with SSE transport on {host}:{port}..."
+                f"Running Neo4j Cypher MCP Server with SSE transport on {sse_host}:{sse_port}..."
             )
             await mcp.run_http_async(
-                host=host,
-                port=port,
-                path=path,
+                host=sse_host,
+                port=sse_port,
+                path=sse_path,
                 middleware=custom_middleware,
                 transport="sse",
             )
@@ -517,4 +578,4 @@ async def main(
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Use the mcp-neo4j-cypher entrypoint to start the server.")

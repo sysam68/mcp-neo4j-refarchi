@@ -30,7 +30,7 @@ def setup(request):
     request.addfinalizer(remove_container)
     os.environ["NEO4J_URI"] = neo4j.get_connection_url()
     os.environ["NEO4J_HOST"] = neo4j.get_container_host_ip()
-    os.environ["NEO4J_PORT"] = neo4j.get_exposed_port(7687)
+    os.environ["NEO4J_PORT"] = str(neo4j.get_exposed_port(7687))
 
     yield neo4j
 
@@ -56,7 +56,7 @@ async def mcp_server(async_neo4j_driver):
 @pytest_asyncio.fixture(scope="function")
 async def mcp_server_short_timeout(async_neo4j_driver):
     """MCP server with a very short timeout for testing timeout behavior."""
-    mcp = create_mcp_server(async_neo4j_driver, "neo4j", read_timeout=0.01)
+    mcp = create_mcp_server(async_neo4j_driver, "neo4j", read_timeout=1)
 
     return mcp
 

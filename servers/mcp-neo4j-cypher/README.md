@@ -44,9 +44,12 @@ The server offers these core tools:
 
 ### 📚 Resources
 
-- `resource://neo4j/schema{?sample_size}`
-  - APOC-derived schema snapshot of the database
-  - Optional query param:
+- `resource://neo4j/schema`
+  - APOC-derived schema snapshot of the database (default sample size)
+  - Returns: JSON document of labels, properties, and relationships
+- `resource://neo4j/schema/{sample_size}`
+  - APOC-derived schema snapshot of the database with explicit sample size
+  - Path param:
     - `sample_size` (integer): Sample size for schema inference; use `-1` for full scan
   - Returns: JSON document of labels, properties, and relationships
 
@@ -65,7 +68,7 @@ The server offers these core tools:
 ### 💬 Prompts
 
 - `neo4j_schema_snapshot`
-  - Summarize the schema using `resource://neo4j/schema{?sample_size}`
+  - Summarize the schema using `resource://neo4j/schema/{sample_size}`
 
 - `neo4j_label_lookup`
   - Retrieve nodes by label using `resource://neo4j/labels/{label}`

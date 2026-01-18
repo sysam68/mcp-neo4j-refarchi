@@ -4,6 +4,13 @@ from typing import Any
 import pytest
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
+from mcp.types import TextContent
+
+
+def _content_text(response: Any) -> str:
+    content = response.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -26,7 +33,7 @@ async def test_write_neo4j_cypher(mcp_server: FastMCP):
     tool = await mcp_server.get_tool("write_neo4j_cypher")
     response = await tool.run(dict(query=query))
 
-    result = json.loads(response.content[0].text)
+    result = json.loads(_content_text(response))
 
     assert "nodes_created" in result
     assert "labels_added" in result
@@ -47,7 +54,7 @@ async def test_read_neo4j_cypher(mcp_server: FastMCP, init_data: Any):
     tool = await mcp_server.get_tool("read_neo4j_cypher")
     response = await tool.run(dict(query=query))
 
-    result = json.loads(response.content[0].text)
+    result = json.loads(_content_text(response))
 
     assert len(result) == 2
     assert result[0]["person"] == "Alice"
@@ -77,8 +84,8 @@ async def test_read_query_timeout_with_slow_query(
     try:
         response = await tool.run(dict(query=slow_query))
         # If it completes, verify it returns valid results
-        if response.content[0].text:
-            result = json.loads(response.content[0].text)
+        if _content_text(response):
+            result = json.loads(_content_text(response))
             assert isinstance(result, list)
     except ToolError as e:
         # If it times out, that's also acceptable behavior
@@ -96,7 +103,7 @@ async def test_read_query_with_normal_timeout_succeeds(
     tool = await mcp_server.get_tool("read_neo4j_cypher")
     response = await tool.run(dict(query=query))
 
-    result = json.loads(response.content[0].text)
+    result = json.loads(_content_text(response))
 
     # Should succeed and return expected results
     assert len(result) == 3
@@ -131,7 +138,7 @@ async def test_write_query_no_timeout(
     tool = await mcp_server_short_timeout.get_tool("write_neo4j_cypher")
     response = await tool.run(dict(query=query))
 
-    result = json.loads(response.content[0].text)
+    result = json.loads(_content_text(response))
 
     # Write operation should succeed regardless of short timeout
     assert "nodes_created" in result
