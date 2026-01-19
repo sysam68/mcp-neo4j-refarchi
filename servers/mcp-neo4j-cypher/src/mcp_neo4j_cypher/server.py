@@ -1,26 +1,43 @@
+import builtins
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import Any, Literal, LiteralString, Optional, cast
 
+import anyio
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
 from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
-from mcp.types import TextContent, ToolAnnotations
+from mcp.shared.message import ServerMessageMetadata, SessionMessage
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    PARSE_ERROR,
+    JSONRPCError,
+    JSONRPCMessage,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    TextContent,
+    ToolAnnotations,
+)
 from neo4j import AsyncDriver, AsyncGraphDatabase, Query, RoutingControl
 from neo4j.exceptions import ClientError, Neo4jError
-from pydantic import Field
+from pydantic import Field, ValidationError
+from sse_starlette import EventSourceResponse
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import ClientDisconnect, Request
 
-from .utils import _normalize_neo4j_value, _truncate_string_to_tokens, _value_sanitize
+from .utils import _truncate_string_to_tokens, _value_sanitize
 
 logger = logging.getLogger("mcp_neo4j_cypher")
 TOOL_NAMES = {
     "read": "read_neo4j_cypher",
     "write": "write_neo4j_cypher",
 }
+_BASE_EXCEPTION_GROUP = getattr(builtins, "BaseExceptionGroup", None)
 
 
 def _format_namespace(namespace: str) -> str:
@@ -36,7 +53,9 @@ def _format_namespace(namespace: str) -> str:
 def _is_write_query(query: str) -> bool:
     """Check if the query is a write query."""
     return (
-        re.search(r"\b(MERGE|CREATE|INSERT|SET|DELETE|REMOVE|ADD)\b", query, re.IGNORECASE)
+        re.search(
+            r"\b(MERGE|CREATE|INSERT|SET|DELETE|REMOVE|ADD)\b", query, re.IGNORECASE
+        )
         is not None
     )
 
@@ -53,6 +72,346 @@ def _format_startup_error(exc: Exception) -> str:
     )
 
 
+def _is_disconnect_exception(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (
+            ClientDisconnect,
+            anyio.ClosedResourceError,
+            anyio.BrokenResourceError,
+        ),
+    ):
+        return True
+    if _BASE_EXCEPTION_GROUP and isinstance(exc, _BASE_EXCEPTION_GROUP):
+        exceptions = getattr(exc, "exceptions", ())
+        return any(_is_disconnect_exception(child) for child in exceptions)
+    return False
+
+
+def _log_disconnect_event(
+    exc: BaseException,
+    request: Optional[Request] = None,
+) -> None:
+    details = ""
+    if request is not None:
+        details = f" method={request.method} path={request.url.path}"
+    logger.info(
+        "Client disconnect handled%s (%s).",
+        details,
+        exc.__class__.__name__,
+    )
+
+
+def _patch_streamable_http_disconnect_handling() -> None:
+    import mcp.server.streamable_http as streamable_http
+
+    streamable_http_state = cast(Any, streamable_http)
+
+    if getattr(streamable_http_state, "_mcp_neo4j_disconnect_patch", False):
+        return
+
+    StreamableHTTPServerTransport = streamable_http.StreamableHTTPServerTransport
+
+    async def _patched_handle_post_request(
+        self,
+        scope,
+        request,
+        receive,
+        send,
+    ) -> None:
+        writer = self._read_stream_writer
+        if writer is None:  # pragma: no cover
+            raise ValueError(
+                "No read stream writer available. Ensure connect() is called first."
+            )
+
+        async def _safe_send_response(response) -> bool:
+            try:
+                await response(scope, receive, send)
+            except Exception as send_err:
+                if _is_disconnect_exception(send_err):
+                    _log_disconnect_event(send_err, request=request)
+                    return False
+                raise
+            return True
+
+        try:
+            if hasattr(self, "_validate_accept_header"):
+                if not await self._validate_accept_header(request, scope, send):
+                    return
+            else:
+                has_json, has_sse = self._check_accept_headers(request)
+                if self.is_json_response_enabled:
+                    if not has_json:
+                        response = self._create_error_response(
+                            "Not Acceptable: Client must accept application/json",
+                            HTTPStatus.NOT_ACCEPTABLE,
+                        )
+                        if not await _safe_send_response(response):
+                            return
+                        return
+                elif not (has_json and has_sse):
+                    response = self._create_error_response(
+                        "Not Acceptable: Client must accept both application/json and text/event-stream",
+                        HTTPStatus.NOT_ACCEPTABLE,
+                    )
+                    if not await _safe_send_response(response):
+                        return
+                    return
+
+            if not self._check_content_type(request):  # pragma: no cover
+                response = self._create_error_response(
+                    "Unsupported Media Type: Content-Type must be application/json",
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
+                if not await _safe_send_response(response):
+                    return
+                return
+
+            try:
+                body = await request.body()
+            except ClientDisconnect as exc:
+                _log_disconnect_event(exc, request=request)
+                return
+
+            try:
+                raw_message = json.loads(body)
+            except json.JSONDecodeError as exc:
+                response = self._create_error_response(
+                    f"Parse error: {str(exc)}",
+                    HTTPStatus.BAD_REQUEST,
+                    PARSE_ERROR,
+                )
+                if not await _safe_send_response(response):
+                    return
+                return
+
+            try:  # pragma: no cover
+                message = JSONRPCMessage.model_validate(raw_message)
+            except ValidationError as exc:  # pragma: no cover
+                response = self._create_error_response(
+                    f"Validation error: {str(exc)}",
+                    HTTPStatus.BAD_REQUEST,
+                    INVALID_PARAMS,
+                )
+                if not await _safe_send_response(response):
+                    return
+                return
+
+            is_initialization_request = (
+                isinstance(message.root, JSONRPCRequest)
+                and message.root.method == "initialize"
+            )  # pragma: no cover
+
+            if is_initialization_request:  # pragma: no cover
+                if self.mcp_session_id:
+                    request_session_id = self._get_session_id(request)
+                    if request_session_id and request_session_id != self.mcp_session_id:
+                        response = self._create_error_response(
+                            "Not Found: Invalid or expired session ID",
+                            HTTPStatus.NOT_FOUND,
+                        )
+                        if not await _safe_send_response(response):
+                            return
+                        return
+            elif not await self._validate_request_headers(
+                request, send
+            ):  # pragma: no cover
+                return
+
+            if not isinstance(message.root, JSONRPCRequest):  # pragma: no cover
+                response = self._create_json_response(
+                    None,
+                    HTTPStatus.ACCEPTED,
+                )
+                if not await _safe_send_response(response):
+                    return
+
+                metadata = ServerMessageMetadata(request_context=request)
+                session_message = SessionMessage(message, metadata=metadata)
+                await writer.send(session_message)
+                return
+
+            request_id = str(message.root.id)  # pragma: no cover
+            self._request_streams[request_id] = anyio.create_memory_object_stream(
+                0
+            )  # pragma: no cover
+            request_stream_reader = self._request_streams[request_id][
+                1
+            ]  # pragma: no cover
+
+            if self.is_json_response_enabled:  # pragma: no cover
+                metadata = ServerMessageMetadata(request_context=request)
+                session_message = SessionMessage(message, metadata=metadata)
+                await writer.send(session_message)
+                try:
+                    response_message = None
+
+                    async for event_message in request_stream_reader:
+                        if isinstance(
+                            event_message.message.root,
+                            JSONRPCResponse | JSONRPCError,
+                        ):
+                            response_message = event_message.message
+                            break
+                        logger.debug(
+                            "received: %s",
+                            event_message.message.root.method,
+                        )
+
+                    if response_message:
+                        response = self._create_json_response(response_message)
+                        if not await _safe_send_response(response):
+                            return
+                    else:
+                        logger.error(
+                            "No response message received before stream closed"
+                        )
+                        response = self._create_error_response(
+                            "Error processing request: No response received",
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                        if not await _safe_send_response(response):
+                            return
+                except Exception:
+                    logger.exception("Error processing JSON response")
+                    response = self._create_error_response(
+                        "Error processing request",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        INTERNAL_ERROR,
+                    )
+                    if not await _safe_send_response(response):
+                        return
+                finally:
+                    await self._clean_up_memory_streams(request_id)
+            else:  # pragma: no cover
+                sse_stream_writer, sse_stream_reader = (
+                    anyio.create_memory_object_stream(0)
+                )
+
+                if hasattr(self, "_sse_stream_writers"):
+                    self._sse_stream_writers[request_id] = sse_stream_writer
+
+                async def sse_writer():
+                    try:
+                        async with sse_stream_writer, request_stream_reader:
+                            if hasattr(self, "_send_priming_event"):
+                                await self._send_priming_event(
+                                    request_id,
+                                    sse_stream_writer,
+                                )
+
+                            async for event_message in request_stream_reader:
+                                event_data = self._create_event_data(event_message)
+                                await sse_stream_writer.send(event_data)
+                                if isinstance(
+                                    event_message.message.root,
+                                    JSONRPCResponse | JSONRPCError,
+                                ):
+                                    break
+                    except anyio.ClosedResourceError:
+                        logger.debug("SSE stream closed by close_sse_stream()")
+                    except Exception:
+                        logger.exception("Error in SSE writer")
+                    finally:
+                        logger.debug("Closing SSE writer")
+                        if hasattr(self, "_sse_stream_writers"):
+                            self._sse_stream_writers.pop(request_id, None)
+                        await self._clean_up_memory_streams(request_id)
+
+                headers = {
+                    "Cache-Control": "no-cache, no-transform",
+                    "Connection": "keep-alive",
+                    "Content-Type": streamable_http.CONTENT_TYPE_SSE,
+                    **(
+                        {streamable_http.MCP_SESSION_ID_HEADER: self.mcp_session_id}
+                        if self.mcp_session_id
+                        else {}
+                    ),
+                }
+                response = EventSourceResponse(
+                    content=sse_stream_reader,
+                    data_sender_callable=sse_writer,
+                    headers=headers,
+                )
+
+                try:
+                    async with anyio.create_task_group() as tg:
+                        tg.start_soon(response, scope, receive, send)
+                        if hasattr(self, "_create_session_message"):
+                            session_message = self._create_session_message(
+                                message,
+                                request,
+                                request_id,
+                            )
+                        else:
+                            metadata = ServerMessageMetadata(request_context=request)
+                            session_message = SessionMessage(
+                                message,
+                                metadata=metadata,
+                            )
+                        await writer.send(session_message)
+                except Exception:
+                    logger.exception("SSE response error")
+                    await sse_stream_writer.aclose()
+                    await sse_stream_reader.aclose()
+                    await self._clean_up_memory_streams(request_id)
+
+        except Exception as err:  # pragma: no cover
+            if _is_disconnect_exception(err):
+                _log_disconnect_event(err, request=request)
+                return
+
+            logger.exception("Error handling POST request")
+            response = self._create_error_response(
+                f"Error handling POST request: {err}",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                INTERNAL_ERROR,
+            )
+            try:
+                await response(scope, receive, send)
+            except Exception as send_err:
+                if _is_disconnect_exception(send_err):
+                    _log_disconnect_event(send_err, request=request)
+                    return
+                raise
+            if writer:
+                try:
+                    await writer.send(Exception(err))
+                except Exception as send_err:
+                    if _is_disconnect_exception(send_err):
+                        _log_disconnect_event(send_err, request=request)
+                        return
+                    raise
+            return
+
+    StreamableHTTPServerTransport._handle_post_request = _patched_handle_post_request
+    streamable_http_state._mcp_neo4j_disconnect_patch = True
+
+
+def _patch_mcp_send_log_message() -> None:
+    import mcp.server.session as mcp_session
+
+    mcp_session_state = cast(Any, mcp_session)
+
+    if getattr(mcp_session_state, "_mcp_neo4j_log_patch", False):
+        return
+
+    original_send_log_message = mcp_session.ServerSession.send_log_message
+
+    async def _wrapped_send_log_message(self, *args, **kwargs):
+        try:
+            return await original_send_log_message(self, *args, **kwargs)
+        except Exception as exc:
+            if _is_disconnect_exception(exc):
+                _log_disconnect_event(exc)
+                return None
+            raise
+
+    mcp_session.ServerSession.send_log_message = _wrapped_send_log_message
+    mcp_session_state._mcp_neo4j_log_patch = True
+
+
 def create_mcp_server(
     neo4j_driver: AsyncDriver,
     database: str = "neo4j",
@@ -62,6 +421,9 @@ def create_mcp_server(
     read_only: bool = False,
     config_sample_size: int = 1000,
 ) -> FastMCP:
+    _patch_streamable_http_disconnect_handling()
+    _patch_mcp_send_log_message()
+
     mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
 
     namespace_prefix = _format_namespace(namespace)
@@ -170,8 +532,7 @@ def create_mcp_server(
     async def _read_schema(sample_size: int) -> dict[str, Any]:
         effective_sample_size = sample_size if sample_size else config_sample_size
         logger.info(
-            "Reading Neo4j schema snapshot with sample size "
-            f"{effective_sample_size}."
+            f"Reading Neo4j schema snapshot with sample size {effective_sample_size}."
         )
 
         get_schema_query = (
@@ -225,9 +586,7 @@ def create_mcp_server(
         try:
             results = await _execute_read_query(get_labels_query)
             labels = [
-                row["label"]
-                for row in results
-                if isinstance(row.get("label"), str)
+                row["label"] for row in results if isinstance(row.get("label"), str)
             ]
             logger.debug(f"Label tool returned {len(labels)} labels")
             return _tool_result(labels)
@@ -270,10 +629,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
                 get_labels_by_name_query, {"targetLabel": label}
             )
             sanitized_results = [_node_from_row(row) for row in results]
-            logger.debug(
-                "Label resource query returned "
-                f"{len(sanitized_results)} rows"
-            )
+            logger.debug(f"Label resource query returned {len(sanitized_results)} rows")
             return sanitized_results
 
         except Neo4jError as e:
@@ -290,9 +646,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
                 "Error executing label resource query: "
                 f"{e}\n{get_labels_by_name_query}\n{label}"
             )
-            raise ResourceError(
-                f"Error: {e}\n{get_labels_by_name_query}\n{label}"
-            )
+            raise ResourceError(f"Error: {e}\n{get_labels_by_name_query}\n{label}")
 
     @mcp.resource(
         "resource://neo4j/refarchi",
@@ -311,8 +665,8 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
             "Read `resource://neo4j/labels/{label}` (name: check_label_existance).\n"
             "The lookup is case-insensitive and returns a JSON array of nodes.\n\n"
             "Example MCP calls:\n"
-            "- tools/call: {\"name\": \"get_db_labels\", \"arguments\": {}}\n"
-            "- resources/read: {\"uri\": \"resource://neo4j/labels/Person\"}\n\n"
+            '- tools/call: {"name": "get_db_labels", "arguments": {}}\n'
+            '- resources/read: {"uri": "resource://neo4j/labels/Person"}\n\n'
             "All tools are read-only, idempotent, and safe to call repeatedly."
         )
 
@@ -346,10 +700,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
         try:
             results = await _execute_read_query(get_core_concept_query)
             sanitized_results = [_node_from_row(row) for row in results]
-            logger.debug(
-                "Core concept tool returned "
-                f"{len(sanitized_results)} rows"
-            )
+            logger.debug(f"Core concept tool returned {len(sanitized_results)} rows")
             return _tool_result(sanitized_results)
 
         except Neo4jError as e:
@@ -363,8 +714,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
 
         except Exception as e:
             logger.error(
-                "Error executing core concept tool: "
-                f"{e}\n{get_core_concept_query}"
+                f"Error executing core concept tool: {e}\n{get_core_concept_query}"
             )
             raise _tool_error_json("Unexpected Error", details=str(e))
 
@@ -516,7 +866,9 @@ async def main(
     read_timeout: int = 30,
     token_limit: Optional[int] = None,
     read_only: bool = False,
-    schema_sample_size: Optional[int] = None, # this is known as the config_sample_size in the create_mcp_server function
+    schema_sample_size: Optional[
+        int
+    ] = None,  # this is known as the config_sample_size in the create_mcp_server function
 ) -> None:
     logger.info("Starting MCP neo4j Server")
 

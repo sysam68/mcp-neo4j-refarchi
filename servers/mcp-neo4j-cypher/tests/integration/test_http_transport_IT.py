@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 
@@ -5,9 +6,13 @@ import aiohttp
 import pytest
 
 
-async def parse_sse_response(response: aiohttp.ClientResponse) -> dict:
+async def parse_sse_response(
+    response: aiohttp.ClientResponse,
+    content: str | None = None,
+) -> dict:
     """Parse Server-Sent Events response from FastMCP 2.0."""
-    content = await response.text()
+    if content is None:
+        content = await response.text()
     lines = content.strip().split("\n")
 
     # Find the data line that contains the JSON
@@ -17,6 +22,34 @@ async def parse_sse_response(response: aiohttp.ClientResponse) -> dict:
             return json.loads(json_str)
 
     raise ValueError("No data line found in SSE response")
+
+
+async def send_partial_post_disconnect(
+    host: str,
+    port: int,
+    path: str = "/mcp/",
+) -> bytes:
+    reader, writer = await asyncio.open_connection(host, port)
+    body = '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"'
+    declared_length = len(body) + 10
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "Accept: application/json, text/event-stream\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {declared_length}\r\n"
+        "mcp-session-id: test-disconnect\r\n"
+        "\r\n"
+        f"{body}"
+    )
+    writer.write(request.encode())
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+    try:
+        return await asyncio.wait_for(reader.read(), timeout=1.0)
+    except asyncio.TimeoutError:
+        return b""
 
 
 @pytest.mark.asyncio
@@ -274,6 +307,57 @@ async def test_http_invalid_tool(http_server):
             # FastMCP returns errors in result field with isError: True
             assert "result" in result
             assert result["result"].get("isError", False)
+
+
+@pytest.mark.asyncio
+async def test_http_invalid_json_error_response(http_server):
+    """Test that invalid JSON returns a structured error response."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "http://127.0.0.1:8001/mcp/",
+            data="{",
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "mcp-session-id": "test-session",
+            },
+        ) as response:
+            assert response.status == 400
+            payload = json.loads(await response.text())
+            assert "error" in payload
+            assert "code" in payload["error"]
+            assert "message" in payload["error"]
+
+
+# Disconnect regression coverage
+@pytest.mark.asyncio
+async def test_http_post_disconnect_keeps_server_healthy(http_server):
+    """Test that POST disconnects do not crash the HTTP server."""
+    response_bytes = await send_partial_post_disconnect("127.0.0.1", 8001)
+    assert response_bytes == b""
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "http://127.0.0.1:8001/mcp/",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "mcp-session-id": "test-session",
+            },
+        ) as response:
+            if response.status != 200:
+                try:
+                    response_text = await response.text()
+                except aiohttp.ClientPayloadError as exc:
+                    pytest.fail(
+                        f"HTTP {response.status} with incomplete payload: {exc}"
+                    )
+                assert response.status == 200, response_text
+
+            result = await parse_sse_response(response)
+            assert "result" in result
+            assert "tools" in result["result"]
 
 
 @pytest.mark.asyncio

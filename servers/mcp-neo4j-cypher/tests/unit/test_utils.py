@@ -777,7 +777,7 @@ def test_sample_invalid_env_var(clean_env, args_factory, mock_logger):
     """Test sample with invalid environment variable value."""
     os.environ["NEO4J_SCHEMA_SAMPLE_SIZE"] = "not_a_number"
     config = process_config(args_factory())
-    
+
     # Should default to None and log warning
     assert config["schema_sample_size"] is None
     mock_logger.warning.assert_called_with(

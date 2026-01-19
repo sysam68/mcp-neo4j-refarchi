@@ -1,7 +1,16 @@
+## v1.1.0
+
+### Fixed
+* Handle HTTP POST client disconnects without crashing stateless sessions
+
+### Added
+* Add regression coverage for HTTP POST disconnect handling
+
 ## v1.0.1
 
 ### Fixed
 * Fix bug in Dockerfile where build would fail due to `LABEL` statement coming before `FROM` statement
+* Handle HTTP POST client disconnects without crashing the server
 
 ### Changed
 * **Breaking**: Remove dynamic schema/labels/coreConcept resources and legacy prompts in favor of read-only tools

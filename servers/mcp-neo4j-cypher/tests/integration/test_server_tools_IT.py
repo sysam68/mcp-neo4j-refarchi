@@ -47,7 +47,12 @@ async def _resource_uris(mcp_server: FastMCP) -> list[str]:
         value = getattr(manager, attr, None)
         if isinstance(value, dict):
             uris.extend(value.keys())
-    for attr in ("templates", "_templates", "resource_templates", "_resource_templates"):
+    for attr in (
+        "templates",
+        "_templates",
+        "resource_templates",
+        "_resource_templates",
+    ):
         value = getattr(manager, attr, None)
         if isinstance(value, dict):
             uris.extend(_template_uris(value.values()))
@@ -147,7 +152,9 @@ async def test_schema_snapshot_timeout(mcp_server_short_timeout: FastMCP):
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_schema_snapshot_boundary_sample_size(mcp_server: FastMCP, init_data: Any):
+async def test_schema_snapshot_boundary_sample_size(
+    mcp_server: FastMCP, init_data: Any
+):
     tool = await mcp_server.get_tool("neo4j_schema_snapshot")
     response = await tool.run({"sample_size": 0})
 

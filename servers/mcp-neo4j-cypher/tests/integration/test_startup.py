@@ -36,12 +36,16 @@ async def test_startup_error_message_is_actionable(monkeypatch):
         async def close(self):
             return None
 
-    monkeypatch.setattr(server.AsyncGraphDatabase, "driver", lambda *args, **kwargs: DummyDriver())
+    monkeypatch.setattr(
+        server.AsyncGraphDatabase, "driver", lambda *args, **kwargs: DummyDriver()
+    )
     monkeypatch.setattr(
         server,
         "create_mcp_server",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            TypeError("FastMCP.__init__() got an unexpected keyword argument dependencies")
+            TypeError(
+                "FastMCP.__init__() got an unexpected keyword argument dependencies"
+            )
         ),
     )
 

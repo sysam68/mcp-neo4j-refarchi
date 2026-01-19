@@ -338,6 +338,10 @@ export NEO4J_MCP_SERVER_ALLOW_ORIGINS="https://yourapp.com"
 mcp-neo4j-cypher
 ```
 
+HTTP POST handling gracefully tolerates client disconnects. If a client drops
+mid-request, the server logs the handled disconnect and skips writing an error
+response when the connection is already closed.
+
 ### Multiple Database Example
 
 Here's an example of connecting to multiple Neo4j databases using namespaces:
