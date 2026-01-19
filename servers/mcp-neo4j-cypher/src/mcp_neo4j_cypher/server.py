@@ -1,4 +1,5 @@
 import builtins
+import inspect
 import json
 import logging
 import re
@@ -339,11 +340,37 @@ def _patch_streamable_http_disconnect_handling() -> None:
                     async with anyio.create_task_group() as tg:
                         tg.start_soon(response, scope, receive, send)
                         if hasattr(self, "_create_session_message"):
-                            session_message = self._create_session_message(
-                                message,
-                                request,
-                                request_id,
-                            )
+                            create_session_message = self._create_session_message
+                            protocol_version = None
+                            try:
+                                signature = inspect.signature(create_session_message)
+                            except (TypeError, ValueError):
+                                signature = None
+
+                            if signature and "protocol_version" in signature.parameters:
+                                protocol_version = request.headers.get(
+                                    streamable_http.MCP_PROTOCOL_VERSION_HEADER
+                                )
+                                if not protocol_version:
+                                    protocol_version = getattr(
+                                        streamable_http,
+                                        "DEFAULT_NEGOTIATED_VERSION",
+                                        None,
+                                    )
+                                if not protocol_version:
+                                    protocol_version = "2025-03-26"
+                                session_message = create_session_message(
+                                    message,
+                                    request,
+                                    request_id,
+                                    protocol_version,
+                                )
+                            else:
+                                session_message = create_session_message(
+                                    message,
+                                    request,
+                                    request_id,
+                                )
                         else:
                             metadata = ServerMessageMetadata(request_context=request)
                             session_message = SessionMessage(
