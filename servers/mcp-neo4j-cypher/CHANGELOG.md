@@ -1,4 +1,4 @@
-## Next
+## v1.0.1
 
 ### Fixed
 * Fix bug in Dockerfile where build would fail due to `LABEL` statement coming before `FROM` statement
