@@ -153,16 +153,16 @@ async def test_http_read_tool_call_read_only_mode(http_server_read_only):
 
 
 @pytest.mark.asyncio
-async def test_http_read_schema_resource(http_server):
-    """Test that schema resource reads work over HTTP."""
+async def test_http_schema_snapshot_tool(http_server):
+    """Test that schema snapshot tool works over HTTP."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "http://127.0.0.1:8001/mcp/",
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "resources/read",
-                "params": {"uri": "resource://neo4j/schema"},
+                "method": "tools/call",
+                "params": {"name": "neo4j_schema_snapshot", "arguments": {}},
             },
             headers={
                 "Accept": "application/json, text/event-stream",
@@ -173,8 +173,7 @@ async def test_http_read_schema_resource(http_server):
             result = await parse_sse_response(response)
             assert response.status == 200
             assert "result" in result
-            assert "contents" in result["result"]
-            assert len(result["result"]["contents"]) > 0
+            assert "content" in result["result"]
 
 
 @pytest.mark.asyncio

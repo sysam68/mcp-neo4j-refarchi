@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.neo4j-contrib/mcp-neo4j-cypher",
-  "description": "A simple Neo4j MCP server that allows you to run Cypher queries against a Neo4j database.",
+  "description": "A Neo4j MCP server that supports read/write Cypher tools plus read-only tools for labels, coreConcept nodes, and schema snapshots.",
   "repository": {
     "url": "https://github.com/neo4j-contrib/mcp-neo4j",
     "source": "github",

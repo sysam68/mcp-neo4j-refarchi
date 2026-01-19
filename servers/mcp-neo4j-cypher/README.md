@@ -42,39 +42,45 @@ The server offers these core tools:
   - Returns: A JSON serialized result summary counter with `{ nodes_updated: number, relationships_created: number, ... }`
   - **Availability**: May be disabled by supplying --read-only as cli flag or `NEO4J_READ_ONLY=true` environment variable
 
-### 📚 Resources
+#### 📌 Reference Tools
 
-- `resource://neo4j/schema`
-  - APOC-derived schema snapshot of the database (default sample size)
-  - Returns: JSON document of labels, properties, and relationships
-- `resource://neo4j/schema/{sample_size}`
-  - APOC-derived schema snapshot of the database with explicit sample size
-  - Path param:
-    - `sample_size` (integer): Sample size for schema inference; use `-1` for full scan
-  - Returns: JSON document of labels, properties, and relationships
-
-- `resource://neo4j/labels`
-  - List all labels present in the database
+- `get_db_labels`
+  - Return all labels present in the database
   - Returns: JSON array of label strings
 
-- `resource://neo4j/labels/{label}`
-  - Find nodes matching a label name (case-insensitive)
-  - Returns: JSON array of rows containing the matching nodes
+- `get_coreConcept`
+  - Return nodes labeled `coreConcept`
+  - Returns: JSON array of objects with `id`, `labels`, and `properties`
 
-- `resource://neo4j/core-concepts`
-  - List nodes labeled `coreConcept`
-  - Returns: JSON array of rows containing coreConcept nodes
+- `neo4j_schema_snapshot`
+  - Return an APOC-derived schema snapshot
+  - Input:
+    - `sample_size` (integer, optional): Sample size for schema inference; use `-1` for full scan
+  - Returns: JSON document of labels, properties, and relationships
+
+### 📚 Resources
+
+- `resource://neo4j/labels/{label}` (name: `check_label_existance`)
+  - Find nodes matching a label name (case-insensitive)
+  - Returns: JSON array of nodes with `id`, `labels`, and `properties`
+
+- `resource://neo4j/refarchi`
+  - Reference guide for label lookup and schema access
+  - Returns: Plain-text guidance with example MCP calls
 
 ### 💬 Prompts
 
-- `neo4j_schema_snapshot`
-  - Summarize the schema using `resource://neo4j/schema/{sample_size}`
+- `neo4j_refarchi_prompt`
+  - Instructs agents to read `resource://neo4j/refarchi` before querying
 
-- `neo4j_label_lookup`
-  - Retrieve nodes by label using `resource://neo4j/labels/{label}`
+### 🚚 Migration Notes
 
-- `neo4j_core_concepts_prompt`
-  - Explore coreConcept nodes using `resource://neo4j/core-concepts`
+The legacy dynamic resources `resource://neo4j/schema`, `resource://neo4j/labels`,
+and `resource://neo4j/core-concepts`, along with prompts
+`neo4j_label_lookup` and `neo4j_core_concepts_prompt`, are removed. Use the
+read-only tools (`get_db_labels`, `get_coreConcept`, `neo4j_schema_snapshot`)
+and the `resource://neo4j/refarchi` guidance instead. This is a breaking change
+and should be released with a major version bump.
 
 ### 🏷️ Namespacing
 
@@ -136,7 +142,8 @@ When a response exceeds the token limit, it will be automatically truncated to f
 
 #### 🔍 Schema Sampling
 
-Control the performance and scope of schema inspection with the default schema sample size and the `sample_size` query parameter on the schema resource:
+Control the performance and scope of schema inspection with the default schema
+sample size and the `sample_size` argument on the `neo4j_schema_snapshot` tool:
 
 **Command Line:**
 ```bash
@@ -159,7 +166,7 @@ The `sample_size` parameter controls how many nodes are examined when generating
 - **Performance**: Lower values (`100`, `500`) provide faster schema inspection on large databases
 - **Accuracy**: Higher values (`5000`, `10000`) provide more comprehensive schema coverage
 - **Full Scan**: Set to `-1` to examine all nodes (can be very slow on large databases)
-- **Per-Call Override**: Use `resource://neo4j/schema?sample_size=...` to override the server default
+- **Per-Call Override**: Call `neo4j_schema_snapshot` with `sample_size` to override the server default
 
 **How Sampling Works** (via [APOC's apoc.meta.schema](https://neo4j.com/docs/apoc/current/overview/apoc.meta/apoc.meta.schema/)):
 

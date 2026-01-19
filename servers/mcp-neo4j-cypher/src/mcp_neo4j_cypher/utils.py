@@ -4,6 +4,7 @@ import os
 from typing import Any, Union
 
 import tiktoken
+from neo4j.graph import Node
 
 logger = logging.getLogger("mcp_neo4j_cypher")
 logger.setLevel(logging.INFO)
@@ -386,6 +387,26 @@ def _value_sanitize(d: Any, list_limit: int = 128) -> Any:
             return None
     else:
         return d
+
+
+def _node_to_json(node: Node) -> dict[str, Any]:
+    """Convert a Neo4j Node to a JSON-serializable dict."""
+    return {
+        "id": node.id,
+        "labels": list(node.labels),
+        "properties": _value_sanitize(dict(node)),
+    }
+
+
+def _normalize_neo4j_value(value: Any) -> Any:
+    """Normalize Neo4j values (Nodes) into JSON-serializable structures."""
+    if isinstance(value, Node):
+        return _node_to_json(value)
+    if isinstance(value, dict):
+        return {key: _normalize_neo4j_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_normalize_neo4j_value(item) for item in value]
+    return value
 
 
 def _truncate_string_to_tokens(
