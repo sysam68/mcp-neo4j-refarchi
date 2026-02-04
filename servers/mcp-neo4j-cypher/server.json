@@ -67,6 +67,27 @@
           "isSecret": false
         },
         {
+          "name": "NEO4J_EMBEDDING_BASE_URL",
+          "description": "Base URL for the embedding service",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "NEO4J_EMBEDDING_MODEL",
+          "description": "Embedding model name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "NEO4J_EMBEDDING_TIMEOUT",
+          "description": "Timeout in seconds for embedding requests",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
           "name": "NEO4J_READ_ONLY",
           "description": "Allow only read-only queries (true/false)",
           "isRequired": false,

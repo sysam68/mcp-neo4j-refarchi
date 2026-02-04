@@ -77,7 +77,12 @@ def _template_uris(templates: Any) -> list[str]:
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_tool_registration(mcp_server: FastMCP):
-    for name in ("get_db_labels", "get_coreConcept", "neo4j_schema_snapshot"):
+    for name in (
+        "get_db_labels",
+        "get_coreConcept",
+        "neo4j_schema_snapshot",
+        "neo4j_vector_search",
+    ):
         tool = await mcp_server.get_tool(name)
         assert tool is not None
 
@@ -105,6 +110,7 @@ async def test_get_db_labels_empty_returns_array(mcp_server: FastMCP, clear_data
 @pytest.mark.asyncio(loop_scope="function")
 async def test_get_core_concept_tool(mcp_server: FastMCP, clear_data: Any):
     write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
     await write_tool.run(
         {
             "query": "CREATE (:coreConcept {name: 'ConceptA'}) RETURN 1",
@@ -136,6 +142,58 @@ async def test_neo4j_schema_snapshot_tool(mcp_server: FastMCP, init_data: Any):
     assert schema["Person"]["count"] == 3
     assert len(schema["Person"]["properties"]) == 2
     assert "FRIEND" in schema["Person"]["relationships"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_neo4j_vector_search_with_embedding(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+
+    try:
+        await write_tool.run(
+            {
+                "query": (
+                    "CREATE (:VectorNode {name: 'Alpha', documentation: 'First node', embedding: [0.1, 0.2, 0.3]}) "
+                    "CREATE (:VectorNode {name: 'Beta', documentation: 'Second node', embedding: [0.0, 0.1, 0.2]}) "
+                    "CREATE (:VectorNode {name: 'Gamma', documentation: 'Third node', embedding: [0.9, 0.8, 0.7]}) "
+                    "RETURN 1"
+                ),
+                "params": {},
+            }
+        )
+        await write_tool.run(
+            {
+                "query": (
+                    "CREATE VECTOR INDEX vec_all_nodes_embedding IF NOT EXISTS "
+                    "FOR (n:VectorNode) ON (n.embedding) "
+                    "OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine'}}"
+                ),
+                "params": {},
+            }
+        )
+        await read_tool.run({"query": "CALL db.awaitIndexes()", "params": {}})
+    except ToolError as exc:
+        if "ProcedureNotFound" in str(exc) or "vector" in str(exc).lower():
+            pytest.skip("Vector index procedures not available in this Neo4j version.")
+        raise
+
+    tool = await mcp_server.get_tool("neo4j_vector_search")
+    response = await tool.run(
+        {
+            "index_name": "vec_all_nodes_embedding",
+            "query_embedding": [0.1, 0.2, 0.3],
+            "top_k": 2,
+        }
+    )
+
+    result = json.loads(_content_text(response))
+
+    assert isinstance(result, list)
+    assert result
+    assert "score" in result[0]
+    assert "properties" in result[0]
+    props = result[0]["properties"]
+    assert "name" in props
+    assert "documentation" in props
 
 
 @pytest.mark.asyncio(loop_scope="function")

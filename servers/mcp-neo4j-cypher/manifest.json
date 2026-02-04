@@ -35,7 +35,10 @@
         "NEO4J_MCP_SERVER_ALLOW_ORIGINS": "${user_config.mcp_server_allow_origins}",
         "NEO4J_MCP_SERVER_ALLOWED_HOSTS": "${user_config.mcp_server_allowed_hosts}",
         "NEO4J_RESPONSE_TOKEN_LIMIT": "${user_config.token_limit}",
-        "NEO4J_READ_TIMEOUT": "${user_config.read_timeout}"
+        "NEO4J_READ_TIMEOUT": "${user_config.read_timeout}",
+        "NEO4J_EMBEDDING_BASE_URL": "${user_config.embedding_base_url}",
+        "NEO4J_EMBEDDING_MODEL": "${user_config.embedding_model}",
+        "NEO4J_EMBEDDING_TIMEOUT": "${user_config.embedding_timeout}"
       }
     }
   },
@@ -59,6 +62,10 @@
     {
       "name": "neo4j_schema_snapshot",
       "description": "Return an APOC-derived schema snapshot"
+    },
+    {
+      "name": "neo4j_vector_search",
+      "description": "Perform a vector similarity search against a Neo4j vector index"
     }
   ],
   "prompts": [
@@ -170,6 +177,30 @@
       "type": "number",
       "title": "Read timeout",
       "description": "Optional read timeout in seconds for read queries.",
+      "default": 30,
+      "required": false,
+      "sensitive": false
+    },
+    "embedding_base_url": {
+      "type": "string",
+      "title": "Embedding Base URL",
+      "description": "Base URL for the embedding service (Ollama).",
+      "default": "http://llm.shared.mpn:11434",
+      "required": false,
+      "sensitive": false
+    },
+    "embedding_model": {
+      "type": "string",
+      "title": "Embedding Model",
+      "description": "Embedding model name.",
+      "default": "nomic-embed-text-v2-moe:latest",
+      "required": false,
+      "sensitive": false
+    },
+    "embedding_timeout": {
+      "type": "number",
+      "title": "Embedding Timeout",
+      "description": "Timeout in seconds for embedding requests.",
       "default": 30,
       "required": false,
       "sensitive": false

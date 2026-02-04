@@ -42,6 +42,16 @@ The server offers these core tools:
   - Returns: A JSON serialized result summary counter with `{ nodes_updated: number, relationships_created: number, ... }`
   - **Availability**: May be disabled by supplying --read-only as cli flag or `NEO4J_READ_ONLY=true` environment variable
 
+- `neo4j_vector_search`
+  - Perform vector similarity search against a Neo4j vector index
+  - Input:
+    - `index_name` (string): Neo4j vector index name (e.g., `vec_all_nodes_embedding`)
+    - `query_text` (string, optional): Query text (embedding generated via Ollama)
+    - `query_embedding` (array, optional): Precomputed embedding vector
+    - `top_k` (integer, optional): Number of neighbors to return (default: 10)
+    - `return_properties` (array, optional): Properties to include (default: `["name", "documentation"]`)
+  - Returns: JSON array with `{ id, labels, score, properties }`
+
 #### 📌 Reference Tools
 
 - `get_db_labels`
@@ -112,6 +122,24 @@ docker run -e NEO4J_READ_TIMEOUT=60 mcp-neo4j-cypher:latest
 ```
 
 **Default**: 30 seconds. Read queries that exceed this timeout will be automatically cancelled to maintain responsive interactions with AI models.
+
+#### 🧠 Embedding Configuration
+
+Configure Ollama for embedding generation when `query_text` is provided:
+
+**Command Line:**
+```bash
+mcp-neo4j-cypher --embedding-base-url http://llm.shared.mpn:11434 \
+  --embedding-model nomic-embed-text-v2-moe:latest \
+  --embedding-timeout 30
+```
+
+**Environment Variables:**
+```bash
+export NEO4J_EMBEDDING_BASE_URL=http://llm.shared.mpn:11434
+export NEO4J_EMBEDDING_MODEL=nomic-embed-text-v2-moe:latest
+export NEO4J_EMBEDDING_TIMEOUT=30
+```
 
 #### 📏 Token Limits
 
