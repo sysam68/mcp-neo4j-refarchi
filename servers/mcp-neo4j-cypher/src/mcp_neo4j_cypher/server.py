@@ -10,7 +10,7 @@ import anyio
 import httpx
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
-from fastmcp.tools import ToolResult
+from fastmcp.tools.tool import ToolResult
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.types import (
     INTERNAL_ERROR,
