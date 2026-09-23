@@ -49,6 +49,22 @@ def main():
         default=None,
         help="Default sample size for schema operations (default: 1000)",
     )
+    parser.add_argument(
+        "--embedding-base-url",
+        default=None,
+        help="Embedding base URL (default: http://llm.shared.mpn:11434)",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        default=None,
+        help="Embedding model name (default: nomic-embed-text-v2-moe:latest)",
+    )
+    parser.add_argument(
+        "--embedding-timeout",
+        type=int,
+        default=None,
+        help="Embedding request timeout in seconds (default: 30)",
+    )
 
     args = parser.parse_args()
     config = process_config(args)

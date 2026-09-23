@@ -327,9 +327,48 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
                 config["schema_sample_size"] = None
         else:
             logger.info(
-                "Info: No default sample size provided. Schema operations will scan entire graph unless explicitly specified."
+                "Info: No sample size provided. Using default: 1000"
             )
             config["schema_sample_size"] = None
+
+    # parse embedding base url
+    if getattr(args, "embedding_base_url", None) is not None:
+        config["embedding_base_url"] = args.embedding_base_url
+    elif os.getenv("NEO4J_EMBEDDING_BASE_URL") is not None:
+        config["embedding_base_url"] = os.getenv("NEO4J_EMBEDDING_BASE_URL")
+    else:
+        config["embedding_base_url"] = "http://llm.shared.mpn:11434"
+        logger.info(
+            "Info: No embedding base URL provided. Using default: http://llm.shared.mpn:11434"
+        )
+
+    # parse embedding model
+    if getattr(args, "embedding_model", None) is not None:
+        config["embedding_model"] = args.embedding_model
+    elif os.getenv("NEO4J_EMBEDDING_MODEL") is not None:
+        config["embedding_model"] = os.getenv("NEO4J_EMBEDDING_MODEL")
+    else:
+        config["embedding_model"] = "nomic-embed-text-v2-moe:latest"
+        logger.info(
+            "Info: No embedding model provided. Using default: nomic-embed-text-v2-moe:latest"
+        )
+
+    # parse embedding timeout
+    if getattr(args, "embedding_timeout", None) is not None:
+        config["embedding_timeout"] = args.embedding_timeout
+    elif os.getenv("NEO4J_EMBEDDING_TIMEOUT") is not None:
+        try:
+            config["embedding_timeout"] = int(os.getenv("NEO4J_EMBEDDING_TIMEOUT") or "")
+        except ValueError:
+            logger.warning(
+                "Warning: Invalid embedding timeout provided. Using default: 30 seconds"
+            )
+            config["embedding_timeout"] = 30
+    else:
+        config["embedding_timeout"] = 30
+        logger.info(
+            "Info: No embedding timeout provided. Using default: 30 seconds"
+        )
 
     return config
 

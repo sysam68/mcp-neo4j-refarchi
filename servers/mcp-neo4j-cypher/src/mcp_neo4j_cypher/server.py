@@ -7,9 +7,10 @@ from http import HTTPStatus
 from typing import Any, Literal, LiteralString, Optional, cast
 
 import anyio
+import httpx
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
-from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
+from fastmcp.tools.tool import ToolResult
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.types import (
     INTERNAL_ERROR,
@@ -51,14 +52,15 @@ def _format_namespace(namespace: str) -> str:
         return ""
 
 
-def _is_write_query(query: str) -> bool:
-    """Check if the query is a write query."""
-    return (
-        re.search(
-            r"\b(MERGE|CREATE|INSERT|SET|DELETE|REMOVE|ADD)\b", query, re.IGNORECASE
-        )
-        is not None
+async def _is_write_query(query: str, driver: AsyncDriver, database: str) -> bool:
+    """Check if the query is a write query by running EXPLAIN and inspecting the query type."""
+    explain_query = "EXPLAIN " + query
+    _, summary, _ = await driver.execute_query(
+        query_=explain_query,
+        database_=database,
     )
+    # query_type is 'r', 'w', 'rw', or 's'; anything containing 'w' is a write
+    return "w" in (summary.query_type or "")
 
 
 def _format_startup_error(exc: Exception) -> str:
@@ -447,11 +449,14 @@ def create_mcp_server(
     token_limit: Optional[int] = None,
     read_only: bool = False,
     config_sample_size: int = 1000,
+    embedding_base_url: str = "http://llm.shared.mpn:11434",
+    embedding_model: str = "nomic-embed-text-v2-moe:latest",
+    embedding_timeout: int = 30,
 ) -> FastMCP:
     _patch_streamable_http_disconnect_handling()
     _patch_mcp_send_log_message()
 
-    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher")
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
@@ -483,6 +488,35 @@ def create_mcp_server(
                 )
             ]
         )
+
+    async def _get_embedding_from_ollama(text: str) -> list[float]:
+        url = f"{embedding_base_url.rstrip('/')}/api/embeddings"
+        payload = {"model": embedding_model, "prompt": text}
+
+        try:
+            async with httpx.AsyncClient(timeout=embedding_timeout) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"Ollama embedding request failed: {e}")
+            raise ToolError(f"Ollama embedding request failed: {e}")
+        except ValueError as e:
+            logger.error(f"Invalid Ollama embedding response: {e}")
+            raise ToolError(f"Invalid Ollama embedding response: {e}")
+
+        if isinstance(data, dict):
+            if isinstance(data.get("embedding"), list):
+                return cast(list[float], data["embedding"])
+            embeddings = data.get("embeddings")
+            if (
+                isinstance(embeddings, list)
+                and embeddings
+                and isinstance(embeddings[0], list)
+            ):
+                return cast(list[float], embeddings[0])
+
+        raise ToolError("Unexpected Ollama embedding response format.")
 
     def _clean_schema(schema: dict) -> dict:
         cleaned = {}
@@ -785,7 +819,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
     ) -> ToolResult:
         """Execute a read Cypher query on the neo4j database."""
 
-        if _is_write_query(query):
+        if await _is_write_query(query, neo4j_driver, database):
             raise ValueError("Only MATCH queries are allowed for read-query")
 
         try:
@@ -824,6 +858,75 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
             raise ToolError(f"Error: {e}\n{query}\n{params}")
 
     @mcp.tool(
+        name=namespace_prefix + "neo4j_vector_search",
+        annotations=ToolAnnotations(
+            title="Neo4j Vector Search",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def neo4j_vector_search(
+        index_name: str = Field(..., description="Neo4j vector index name."),
+        query_text: Optional[str] = Field(
+            default=None,
+            description="Query text to embed (optional if query_embedding provided).",
+        ),
+        query_embedding: Optional[list[float]] = Field(
+            default=None,
+            description="Query embedding vector (optional if query_text provided).",
+        ),
+        top_k: int = Field(
+            default=10, description="Number of nearest neighbors to return."
+        ),
+        return_properties: Optional[list[str]] = Field(
+            default=None,
+            description="Node properties to include in results (defaults to name, documentation).",
+        ),
+    ) -> ToolResult:
+        """Perform a vector search on Neo4j using a vector index."""
+
+        if query_embedding is None and not query_text:
+            raise ToolError(
+                "neo4j_vector_search requires either query_embedding or query_text."
+            )
+
+        embedding = query_embedding
+        if embedding is None:
+            embedding = await _get_embedding_from_ollama(query_text or "")
+
+        props = return_properties or ["name", "documentation"]
+
+        cypher = """
+CALL db.index.vector.queryNodes($index_name, $top_k, $embedding)
+YIELD node, score
+RETURN elementId(node) AS id,
+       labels(node) AS labels,
+       score AS score,
+       reduce(m = {}, k IN $return_properties | m + { [k]: node[k] }) AS properties
+"""
+
+        try:
+            results = await _execute_read_query(
+                cypher,
+                {
+                    "index_name": index_name,
+                    "top_k": top_k,
+                    "embedding": embedding,
+                    "return_properties": props,
+                },
+            )
+            sanitized_results = [_value_sanitize(row) for row in results]
+            return _tool_result(sanitized_results)
+        except Neo4jError as e:
+            logger.error(f"Neo4j Error executing vector search: {e}\n{cypher}")
+            raise ToolError(f"Neo4j Error: {e}\n{cypher}")
+        except Exception as e:
+            logger.error(f"Error executing vector search: {e}\n{cypher}")
+            raise ToolError(f"Error: {e}\n{cypher}")
+
+    @mcp.tool(
         name=namespace_prefix + TOOL_NAMES["write"],
         annotations=ToolAnnotations(
             title="Write Neo4j Cypher",
@@ -842,7 +945,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
     ) -> ToolResult:
         """Execute a write Cypher query on the neo4j database."""
 
-        if not _is_write_query(query):
+        if not await _is_write_query(query, neo4j_driver, database):
             raise ValueError("Only write queries are allowed for write-query")
 
         try:
@@ -896,6 +999,9 @@ async def main(
     schema_sample_size: Optional[
         int
     ] = None,  # this is known as the config_sample_size in the create_mcp_server function
+    embedding_base_url: str = "http://llm.shared.mpn:11434",
+    embedding_model: str = "nomic-embed-text-v2-moe:latest",
+    embedding_timeout: int = 30,
 ) -> None:
     logger.info("Starting MCP neo4j Server")
 
@@ -925,6 +1031,9 @@ async def main(
             token_limit,
             read_only,
             schema_sample_size if schema_sample_size is not None else 1000,
+            embedding_base_url,
+            embedding_model,
+            embedding_timeout,
         )
     except Exception as exc:
         message = _format_startup_error(exc)
@@ -946,6 +1055,7 @@ async def main(
                 port=http_port,
                 path=http_path,
                 middleware=custom_middleware,
+                stateless_http=True,
             )
         case "stdio":
             logger.info("Running Neo4j Cypher MCP Server with stdio transport...")
@@ -963,6 +1073,7 @@ async def main(
                 path=sse_path,
                 middleware=custom_middleware,
                 transport="sse",
+                stateless_http=True,
             )
         case _:
             logger.error(
