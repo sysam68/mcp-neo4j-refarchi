@@ -1,24 +1,33 @@
-## v1.1.0
+## Next
 
 ### Fixed
-* Handle HTTP POST client disconnects without crashing stateless sessions
+* Default `schema_sample_size` to `1000` when CLI and env are unset so `get_neo4j_schema` does not interpolate `{sample: None}`
+
+### Changed
 
 ### Added
-* Add regression coverage for HTTP POST disconnect handling
 
-## v1.0.1
+## v0.6.0
+
+### Fixed
+* Fix startup `ImportError` caused by `pydocket` importing `FakeConnection` from `fakeredis>=2.27` — cap `fastmcp<2.14` to exclude the `pydocket` transitive dependency
+* Fix `TypeError: str expected, not int` in integration tests caused by `testcontainers` returning an `int` from `get_exposed_port()`
+
+### Changed
+* Update `_is_write_query` to use `EXPLAIN` query instead of regex check
+
+## v0.5.3
+
+### Changed
+* Security upgrade python from 3.12-slim to 3.13.8-slim
+* Update default MCP server endpoint from /api/mcp/ to /mcp/
+* Lock FastMCP version to <3.x
+
+## v0.5.2
 
 ### Fixed
 * Fix bug in Dockerfile where build would fail due to `LABEL` statement coming before `FROM` statement
-* Handle HTTP POST client disconnects without crashing the server
-
-### Changed
-* **Breaking**: Remove dynamic schema/labels/coreConcept resources and legacy prompts in favor of read-only tools
-* Replace `neo4j_schema_snapshot` prompt with a tool of the same name
-
-### Added
-* Add `get_db_labels`, `get_coreConcept`, and `neo4j_schema_snapshot` read-only tools
-* Add `resource://neo4j/refarchi` and `neo4j_refarchi_prompt` for usage guidance
+* Removed `dependencies=...` from server constructor. This was removed from FastMCP.
 
 ## v0.5.1
 

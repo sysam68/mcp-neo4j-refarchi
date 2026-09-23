@@ -1,8 +1,20 @@
-# Neo4j MCP Clients & Servers
+# Neo4j Labs MCP Servers
+
+## Neo4j Labs
+
+These MCP servers are a part of the [Neo4j Labs](https://neo4j.com/labs/) program. 
+They are developed and maintained by the Neo4j Field GenAI team and welcome contributions from the larger developer community. 
+These servers are frequently updated with new and experimental features, but are not supported by the Neo4j product team. 
+
+**They are actively developed and maintained, but we don’t provide any SLAs or guarantees around backwards compatibility and deprecation.**
+
+If you are looking for the official product Neo4j MCP server please find it [here](https://github.com/neo4j/mcp).
+
+## Overview
 
 Model Context Protocol (MCP) is a [standardized protocol](https://modelcontextprotocol.io/introduction) for managing context between large language models (LLMs) and external systems. 
 
-This lets you use Claude Desktop, or any other MCP Client (VS Code, Cursor, Windsurf), to use natural language to accomplish things with Neo4j and your Aura account, e.g.:
+This lets you use Claude Desktop, or any other MCP Client (VS Code, Cursor, Windsurf, Gemini CLI), to use natural language to accomplish things with Neo4j and your Aura account, e.g.:
 
 * What is in this graph?
 * Render a chart from the top products sold by frequency, total and average volume
@@ -17,6 +29,8 @@ This lets you use Claude Desktop, or any other MCP Client (VS Code, Cursor, Wind
 [Details in Readme](./servers/mcp-neo4j-cypher/)
 
 Get database schema for a configured database and execute generated read and write Cypher queries on that database.
+
+**Requirement**: Requires the [APOC plugin](https://neo4j.com/docs/apoc/current/installation/) to be installed and enabled on the Neo4j instance for schema inspection.
 
 ### `mcp-neo4j-memory` - knowledge graph memory stored in Neo4j
 
@@ -90,6 +104,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 * [Everything a Developer Needs to Know About the Model Context Protocol (MCP)](https://neo4j.com/blog/developer/model-context-protocol/)
 * [Claude Converses With Neo4j Via MCP - Graph Database & Analytics](https://neo4j.com/blog/developer/claude-converses-neo4j-via-mcp/)
 * [Building Knowledge Graphs With Claude and Neo4j: A No-Code MCP Approach - Graph Database & Analytics](https://neo4j.com/blog/developer/knowledge-graphs-claude-neo4j-mcp/)
+* [Using the Neo4j Extension in Gemini CLI](https://cloud.google.com/blog/topics/developers-practitioners/using-the-neo4j-extension-in-gemini-cli)
 
 ## License
 

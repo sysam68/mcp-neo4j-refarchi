@@ -327,7 +327,7 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
                 config["schema_sample_size"] = None
         else:
             logger.info(
-                "Info: No default sample size provided. Schema operations will scan entire graph unless explicitly specified."
+                "Info: No sample size provided. Using default: 1000"
             )
             config["schema_sample_size"] = None
 

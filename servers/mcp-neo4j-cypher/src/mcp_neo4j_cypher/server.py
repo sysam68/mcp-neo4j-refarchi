@@ -10,7 +10,7 @@ import anyio
 import httpx
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server import FastMCP
-from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
+from fastmcp.tools import ToolResult
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.types import (
     INTERNAL_ERROR,
@@ -52,14 +52,15 @@ def _format_namespace(namespace: str) -> str:
         return ""
 
 
-def _is_write_query(query: str) -> bool:
-    """Check if the query is a write query."""
-    return (
-        re.search(
-            r"\b(MERGE|CREATE|INSERT|SET|DELETE|REMOVE|ADD)\b", query, re.IGNORECASE
-        )
-        is not None
+async def _is_write_query(query: str, driver: AsyncDriver, database: str) -> bool:
+    """Check if the query is a write query by running EXPLAIN and inspecting the query type."""
+    explain_query = "EXPLAIN " + query
+    _, summary, _ = await driver.execute_query(
+        query_=explain_query,
+        database_=database,
     )
+    # query_type is 'r', 'w', 'rw', or 's'; anything containing 'w' is a write
+    return "w" in (summary.query_type or "")
 
 
 def _format_startup_error(exc: Exception) -> str:
@@ -455,7 +456,7 @@ def create_mcp_server(
     _patch_streamable_http_disconnect_handling()
     _patch_mcp_send_log_message()
 
-    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher")
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
@@ -818,7 +819,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
     ) -> ToolResult:
         """Execute a read Cypher query on the neo4j database."""
 
-        if _is_write_query(query):
+        if await _is_write_query(query, neo4j_driver, database):
             raise ValueError("Only MATCH queries are allowed for read-query")
 
         try:
@@ -944,7 +945,7 @@ RETURN elementId(node) AS id,
     ) -> ToolResult:
         """Execute a write Cypher query on the neo4j database."""
 
-        if not _is_write_query(query):
+        if not await _is_write_query(query, neo4j_driver, database):
             raise ValueError("Only write queries are allowed for write-query")
 
         try:
@@ -1054,6 +1055,7 @@ async def main(
                 port=http_port,
                 path=http_path,
                 middleware=custom_middleware,
+                stateless_http=True,
             )
         case "stdio":
             logger.info("Running Neo4j Cypher MCP Server with stdio transport...")
@@ -1071,6 +1073,7 @@ async def main(
                 path=sse_path,
                 middleware=custom_middleware,
                 transport="sse",
+                stateless_http=True,
             )
         case _:
             logger.error(
