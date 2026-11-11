@@ -1,7 +1,37 @@
 ## Next
 
 ### Fixed
+
+### Changed
+* Update base image in Dockerfile to `python:3.13.8-slim`
+
+### Added
+* Add tool annotations for all tools - readOnlyHint, destructiveHint, title, idempotentHint, openWorldHint
+
+## v0.8.2
+
+### Fixed
+* Fixed bug in f-string formatting with Pydantic model export in Python v < 3.12
+* Fixed bug in the data modeling Github action that didn't actually test different Python versions due to not specifying the version when executing uv commands.
+* Fix Github action to install dev dependencies correctly with uv sync
+
+### Changed
+* Update `pyproject.toml` to declare dev dependencies correctly (previously using deprecated method)
+
+## v0.8.1
+
+### Fixed
+* Shorten tool name `export_to_neo4j_python_graphrag_package_schema` to `export_to_neo4j_graphrag_pkg_schema` to be under 60 characters including the default server name.
+* Shorten tool name `load_from_neo4j_python_graphrag_package_schema` to `load_from_neo4j_graphrag_pkg_schema` to be under 60 characters including the default server name.
+
+### Added
+* Update README to include new tools and optional `return_validated` argument to validation tools
+
+## v0.8.0
+
+### Fixed
 * Remove `stateless_http` flag on MCP server constructor and move to the appropriate `run_...` function for http and sse transport. The constructor flag is deprecated by FastMCP.
+* Removed `dependencies=...` from server constructor. This was removed from FastMCP.
 
 ### Changed
 * Make node corners rounded for Mermaid visualization

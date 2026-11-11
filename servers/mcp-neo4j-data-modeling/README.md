@@ -90,19 +90,22 @@ The server offers these core tools:
    - Validate a single node structure
    - Input:
      - `node` (Node): The node to validate
-   - Returns: True if valid, raises ValueError if invalid
+     - `return_validated` (bool, optional): If True, returns the validated node object instead of True
+   - Returns: True if valid (or validated Node object if `return_validated=True`), raises ValueError if invalid
 
 - `validate_relationship`
    - Validate a single relationship structure
    - Input:
      - `relationship` (Relationship): The relationship to validate
-   - Returns: True if valid, raises ValueError if invalid
+     - `return_validated` (bool, optional): If True, returns the validated relationship object instead of True
+   - Returns: True if valid (or validated Relationship object if `return_validated=True`), raises ValueError if invalid
 
 - `validate_data_model`
    - Validate the entire data model structure
    - Input:
      - `data_model` (DataModel): The data model to validate
-   - Returns: True if valid, raises ValueError if invalid
+     - `return_validated` (bool, optional): If True, returns the validated data model object instead of True
+   - Returns: True if valid (or validated DataModel object if `return_validated=True`), raises ValueError if invalid
 
 #### 👁️ Visualization Tools
 - `get_mermaid_config_str`
@@ -140,6 +143,24 @@ These tools provide integration with **[Arrows](https://arrows.app/)** - a graph
      - `data_model` (DataModel): The data model to export
    - Returns: String representation of the data model in OWL Turtle format
    - Note: **This conversion is lossy** - Relationship properties are not preserved since OWL does not support properties on ObjectProperties
+
+- `export_to_pydantic_models`
+   - Export a data model to Pydantic models
+   - Input:
+     - `data_model` (DataModel): The data model to export
+   - Returns: String representation of the Pydantic models as a Python file, including imports and model definitions for nodes, relationships, and the complete data model
+
+- `export_to_neo4j_graphrag_pkg_schema`
+   - Export a data model to Neo4j GraphRAG Python Package schema format
+   - Input:
+     - `data_model` (DataModel): The data model to export
+   - Returns: Dictionary containing the Neo4j GraphRAG Python Package schema
+
+- `load_from_neo4j_graphrag_pkg_schema`
+   - Load a data model from Neo4j GraphRAG Python Package schema format
+   - Input:
+     - `neo4j_graphrag_python_package_schema` (dict): Neo4j GraphRAG Python Package schema dictionary
+   - Returns: DataModel object
 
 #### 📚 Example Data Model Tools
 
@@ -204,7 +225,7 @@ Add the server to your `claude_desktop_config.json` with the transport method sp
 "mcpServers": {
   "neo4j-data-modeling": {
     "command": "uvx",
-    "args": [ "mcp-neo4j-data-modeling@0.7.0", "--transport", "stdio" ]
+    "args": [ "mcp-neo4j-data-modeling@0.8.2", "--transport", "stdio" ]
   }
 }
 ```
@@ -217,11 +238,11 @@ The server supports namespacing the server tools:
 "mcpServers": {
   "neo4j-data-modeling-app1": {
     "command": "uvx",
-    "args": [ "mcp-neo4j-data-modeling@0.7.0", "--transport", "stdio", "--namespace", "app1" ]
+    "args": [ "mcp-neo4j-data-modeling@0.8.2", "--transport", "stdio", "--namespace", "app1" ]
   },
   "neo4j-data-modeling-app2": {
     "command": "uvx", 
-    "args": [ "mcp-neo4j-data-modeling@0.7.0", "--transport", "stdio", "--namespace", "app2" ]
+    "args": [ "mcp-neo4j-data-modeling@0.8.2", "--transport", "stdio", "--namespace", "app2" ]
   }
 }
 ```

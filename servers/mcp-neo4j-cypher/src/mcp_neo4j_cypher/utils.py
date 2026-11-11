@@ -152,8 +152,9 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
     if args.transport is not None:
         config["transport"] = normalize_transport(args.transport)
     else:
-        if os.getenv("NEO4J_TRANSPORT") is not None:
-            config["transport"] = normalize_transport(os.getenv("NEO4J_TRANSPORT"))
+        env_transport = os.getenv("NEO4J_TRANSPORT")
+        if env_transport is not None:
+            config["transport"] = normalize_transport(env_transport)
         else:
             logger.warning("Warning: No transport type provided. Using default: stdio")
             config["transport"] = "stdio"
@@ -356,9 +357,9 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
                 config["schema_sample_size"] = None
         else:
             logger.info(
-                "Info: No default sample size provided. Schema operations will scan entire graph unless explicitly specified."
+                "Info: No sample size provided. Using default: 1000"
             )
-            config["schema_sample_size"] = None
+            config["schema_sample_size"] = 1000
 
     # parse embedding base url
     if getattr(args, "embedding_base_url", None) is not None:

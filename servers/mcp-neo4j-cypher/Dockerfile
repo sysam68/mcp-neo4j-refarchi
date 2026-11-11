@@ -1,6 +1,7 @@
-FROM python:3.11-slim
+FROM python:3.13.8-slim
 
 LABEL io.modelcontextprotocol.server.name="io.github.neo4j-contrib/mcp-neo4j-cypher"
+LABEL version="1.2.0"
 
 # Set working directory
 WORKDIR /app
@@ -11,8 +12,7 @@ RUN pip install --no-cache-dir hatchling
 COPY pyproject.toml /app/
 
 # Install dependencies
-RUN pip install --no-cache-dir neo4j>=5.26.0 "fastmcp>=3.2,<3.3"
-
+RUN pip install --no-cache-dir neo4j>=5.26.0 "fastmcp>=3.2,<3.3" httpx>=0.27.0
 
 # Copy the source code
 COPY src/ /app/src/

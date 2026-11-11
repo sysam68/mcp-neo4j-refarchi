@@ -55,9 +55,13 @@ def test_format_startup_error_fastmcp_typeerror():
 
 
 def test_contract_contains_startup_and_tool_schemas():
-    contract_path = Path(
-        "/Users/sylvain/Development/CopilotEA/mcp/mcp-neo4j/specs/"
-        "001-fix-fastmcp-deps/contracts/server-startup.yaml"
+    repository_root = Path(__file__).resolve().parents[4]
+    contract_path = (
+        repository_root
+        / "specs"
+        / "001-fix-fastmcp-deps"
+        / "contracts"
+        / "server-startup.yaml"
     )
     contract_text = contract_path.read_text()
 

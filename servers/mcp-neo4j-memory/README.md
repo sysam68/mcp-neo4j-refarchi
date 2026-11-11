@@ -121,7 +121,7 @@ Add the server to your `claude_desktop_config.json` with configuration of:
   "neo4j": {
     "command": "uvx",
     "args": [
-      "mcp-neo4j-memory@0.4.2",
+      "mcp-neo4j-memory@0.4.5",
       "--db-url",
       "neo4j+s://xxxx.databases.neo4j.io",
       "--username",
@@ -139,7 +139,7 @@ Alternatively, you can set environment variables:
 "mcpServers": {
   "neo4j": {
     "command": "uvx",
-    "args": [ "mcp-neo4j-memory@0.4.2" ],
+    "args": [ "mcp-neo4j-memory@0.4.5" ],
     "env": {
       "NEO4J_URL": "neo4j+s://xxxx.databases.neo4j.io",
       "NEO4J_USERNAME": "<your-username>",
@@ -152,7 +152,7 @@ Alternatively, you can set environment variables:
 #### Namespacing
 For multi-tenant deployments, add `--namespace` to prefix tool names:
 ```json
-"args": [ "mcp-neo4j-memory@0.4.2", "--namespace", "myapp", "--db-url", "..." ]
+"args": [ "mcp-neo4j-memory@0.4.5", "--namespace", "myapp", "--db-url", "..." ]
 ```
 Tools become: `myapp-read_graph`, `myapp-create_entities`, etc.
 
@@ -167,7 +167,7 @@ The server supports HTTP transport for web-based deployments and microservices:
 mcp-neo4j-memory --transport http
 
 # Custom HTTP configuration
-mcp-neo4j-memory --transport http --host 127.0.0.1 --port 8080 --path /api/mcp/
+mcp-neo4j-memory --transport http --host 127.0.0.1 --port 8080 --path /mcp/
 ```
 
 Environment variables for HTTP configuration:
@@ -176,7 +176,7 @@ Environment variables for HTTP configuration:
 export NEO4J_TRANSPORT=http
 export NEO4J_MCP_SERVER_HOST=127.0.0.1
 export NEO4J_MCP_SERVER_PORT=8080
-export NEO4J_MCP_SERVER_PATH=/api/mcp/
+export NEO4J_MCP_SERVER_PATH=/mcp/
 export NEO4J_NAMESPACE=myapp
 mcp-neo4j-memory
 ```
@@ -201,7 +201,7 @@ The server supports three transport modes:
       "-e", "NEO4J_URL=neo4j+s://xxxx.databases.neo4j.io",
       "-e", "NEO4J_USERNAME=<your-username>",
       "-e", "NEO4J_PASSWORD=<your-password>",
-      "mcp/neo4j-memory:0.4.2"
+      "mcp/neo4j-memory:0.4.5"
     ]
   }
 }

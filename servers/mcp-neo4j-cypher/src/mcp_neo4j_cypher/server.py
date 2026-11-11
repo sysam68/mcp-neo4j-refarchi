@@ -3,7 +3,6 @@ import inspect
 import json
 import logging
 import os
-import re
 from http import HTTPStatus
 from typing import Any, Literal, LiteralString, Optional, cast
 
@@ -12,7 +11,7 @@ import httpx
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.resources.base import ResourceContent, ResourceResult
 from fastmcp.server import FastMCP
-from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
+from fastmcp.tools import ToolResult
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.types import (
     INTERNAL_ERROR,
@@ -54,14 +53,15 @@ def _format_namespace(namespace: str) -> str:
         return ""
 
 
-def _is_write_query(query: str) -> bool:
-    """Check if the query is a write query."""
-    return (
-        re.search(
-            r"\b(MERGE|CREATE|INSERT|SET|DELETE|REMOVE|ADD)\b", query, re.IGNORECASE
-        )
-        is not None
+async def _is_write_query(query: str, driver: AsyncDriver, database: str) -> bool:
+    """Check if the query is a write query by running EXPLAIN and inspecting the query type."""
+    explain_query = "EXPLAIN " + query
+    _, summary, _ = await driver.execute_query(
+        Query(cast(LiteralString, explain_query)),
+        database_=database,
     )
+    # query_type is 'r', 'w', 'rw', or 's'; anything containing 'w' is a write
+    return "w" in (summary.query_type or "")
 
 
 def _format_startup_error(exc: Exception) -> str:
@@ -457,7 +457,7 @@ def create_mcp_server(
     _patch_streamable_http_disconnect_handling()
     _patch_mcp_send_log_message()
 
-    mcp: FastMCP = FastMCP("mcp-neo4j-cypher")
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
@@ -1333,7 +1333,7 @@ ORDER BY depth, id
         description="Reference guidance for label lookup and schema access.",
         mime_type="text/plain",
     )
-    async def neo4j_refarchi() -> str:
+    async def neo4j_refarchi() -> ResourceResult:
         """Provide reference guidance for label lookup and schema access."""
         return _resource_result(
             "resource://neo4j/refarchi",
@@ -1455,7 +1455,7 @@ ORDER BY depth, id
     ) -> ToolResult:
         """Execute a read Cypher query on the neo4j database."""
 
-        if _is_write_query(query):
+        if await _is_write_query(query, neo4j_driver, resolved_database):
             raise ValueError("Only MATCH queries are allowed for read-query")
 
         try:
@@ -1652,7 +1652,7 @@ RETURN elementId(node) AS id,
         ) -> ToolResult:
             """Execute a write Cypher query on the neo4j database."""
 
-            if not _is_write_query(query):
+            if not await _is_write_query(query, neo4j_driver, resolved_database):
                 raise ValueError("Only write queries are allowed for write-query")
 
             try:
