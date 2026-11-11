@@ -9,6 +9,8 @@ from neo4j.graph import Node
 logger = logging.getLogger("mcp_neo4j_cypher")
 logger.setLevel(logging.INFO)
 
+SUPPORTED_TRANSPORTS = {"stdio", "sse", "streamable-http", "http"}
+
 
 def parse_boolean_safely(value: Union[str, bool]) -> bool:
     """
@@ -41,6 +43,33 @@ def parse_boolean_safely(value: Union[str, bool]) -> bool:
     # we shouldn't get here, but just in case
     else:
         raise ValueError(f"Invalid boolean value: '{value}'. Must be 'true' or 'false'")
+
+
+def normalize_transport(value: str) -> str:
+    """
+    Normalize transport values to the FastMCP 3.x names.
+
+    Parameters
+    ----------
+    value : str
+        Transport value provided by CLI or environment.
+
+    Returns
+    -------
+    str
+        Canonical transport name.
+    """
+
+    normalized = value.strip().lower()
+    if normalized not in SUPPORTED_TRANSPORTS:
+        allowed = ", ".join(sorted(SUPPORTED_TRANSPORTS))
+        raise ValueError(f"Invalid transport: '{value}'. Must be one of: {allowed}")
+
+    if normalized == "http":
+        logger.info("Info: Transport 'http' is deprecated. Using 'streamable-http'.")
+        return "streamable-http"
+
+    return normalized
 
 
 def process_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -121,10 +150,10 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
 
     # parse transport
     if args.transport is not None:
-        config["transport"] = args.transport
+        config["transport"] = normalize_transport(args.transport)
     else:
         if os.getenv("NEO4J_TRANSPORT") is not None:
-            config["transport"] = os.getenv("NEO4J_TRANSPORT")
+            config["transport"] = normalize_transport(os.getenv("NEO4J_TRANSPORT"))
         else:
             logger.warning("Warning: No transport type provided. Using default: stdio")
             config["transport"] = "stdio"

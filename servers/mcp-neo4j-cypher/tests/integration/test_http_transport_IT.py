@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from asyncio.subprocess import PIPE
 
 import aiohttp
 import pytest
@@ -206,6 +207,54 @@ async def test_http_schema_snapshot_tool(http_server):
             result = await parse_sse_response(response)
             assert response.status == 200
             assert "result" in result
+
+        # 2. Write data
+        async with session.post(
+            "http://127.0.0.1:8001/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "write_neo4j_cypher",
+                    "arguments": {
+                        "query": "CREATE (n:IntegrationTest {name: 'workflow_test'})"
+                    },
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "mcp-session-id": "test-session",
+            },
+        ) as response:
+            result = await parse_sse_response(response)
+            assert response.status == 200
+            assert "result" in result
+
+        # 3. Read data
+        async with session.post(
+            "http://127.0.0.1:8001/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_neo4j_cypher",
+                    "arguments": {
+                        "query": "MATCH (n:IntegrationTest) RETURN n.name as name"
+                    },
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "mcp-session-id": "test-session",
+            },
+        ) as response:
+            result = await parse_sse_response(response)
+            assert response.status == 200
+            assert "result" in result
             assert "content" in result["result"]
 
 
@@ -379,53 +428,60 @@ async def test_http_full_workflow(http_server):
             assert response.status == 200
             assert "result" in result
 
-        # 2. Write data
-        async with session.post(
-            "http://127.0.0.1:8001/mcp/",
-            json={
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "write_neo4j_cypher",
-                    "arguments": {
-                        "query": "CREATE (n:IntegrationTest {name: 'workflow_test'})"
-                    },
-                },
-            },
-            headers={
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-                "mcp-session-id": "test-session",
-            },
-        ) as response:
-            result = await parse_sse_response(response)
-            assert response.status == 200
-            assert "result" in result
 
-        # 3. Read data
-        async with session.post(
-            "http://127.0.0.1:8001/mcp/",
-            json={
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "read_neo4j_cypher",
-                    "arguments": {
-                        "query": "MATCH (n:IntegrationTest) RETURN n.name as name"
-                    },
+@pytest.mark.asyncio
+async def test_http_transport_alias_still_starts(setup):
+    """Test that the legacy http alias still boots the server."""
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "run",
+        "mcp-neo4j-cypher",
+        "--transport",
+        "http",
+        "--server-host",
+        "127.0.0.1",
+        "--server-port",
+        "8006",
+        "--db-url",
+        setup.get_connection_url(),
+        "--username",
+        setup.username,
+        "--password",
+        setup.password,
+        "--database",
+        "neo4j",
+        stdout=PIPE,
+        stderr=PIPE,
+        cwd=".",
+    )
+
+    await asyncio.sleep(3)
+
+    if process.returncode is not None:
+        stdout, stderr = await process.communicate()
+        raise RuntimeError(
+            f"HTTP alias server failed to start. stdout: {stdout.decode()}, stderr: {stderr.decode()}"
+        )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://127.0.0.1:8006/mcp/",
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                    "mcp-session-id": "test-session",
                 },
-            },
-            headers={
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-                "mcp-session-id": "test-session",
-            },
-        ) as response:
-            result = await parse_sse_response(response)
-            assert response.status == 200
-            assert "result" in result
+            ) as response:
+                assert response.status == 200
+    finally:
+        try:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
 
 
 # CORS Middleware Tests

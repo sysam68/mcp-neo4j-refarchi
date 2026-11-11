@@ -128,7 +128,7 @@ async def sse_server(setup: Neo4jContainer):
 
 @pytest_asyncio.fixture
 async def http_server(setup: Neo4jContainer):
-    """Start the MCP server in HTTP mode."""
+    """Start the MCP server in streamable HTTP mode."""
 
     # Start server process in HTTP mode using the installed binary
     process = await asyncio.create_subprocess_exec(
@@ -136,7 +136,7 @@ async def http_server(setup: Neo4jContainer):
         "run",
         "mcp-neo4j-cypher",
         "--transport",
-        "http",
+        "streamable-http",
         "--server-host",
         "127.0.0.1",
         "--server-port",
@@ -175,7 +175,7 @@ async def http_server(setup: Neo4jContainer):
 
 @pytest_asyncio.fixture
 async def http_server_restricted_cors(setup: Neo4jContainer):
-    """Start the MCP server in HTTP mode with restricted CORS origins."""
+    """Start the MCP server in streamable HTTP mode with restricted CORS origins."""
 
     # Start server process in HTTP mode with restricted CORS
     process = await asyncio.create_subprocess_exec(
@@ -183,7 +183,7 @@ async def http_server_restricted_cors(setup: Neo4jContainer):
         "run",
         "mcp-neo4j-cypher",
         "--transport",
-        "http",
+        "streamable-http",
         "--server-host",
         "127.0.0.1",
         "--server-port",
@@ -224,7 +224,7 @@ async def http_server_restricted_cors(setup: Neo4jContainer):
 
 @pytest_asyncio.fixture
 async def http_server_custom_hosts(setup: Neo4jContainer):
-    """Start the MCP server in HTTP mode with custom allowed hosts."""
+    """Start the MCP server in streamable HTTP mode with custom allowed hosts."""
 
     # Start server process in HTTP mode with custom allowed hosts
     process = await asyncio.create_subprocess_exec(
@@ -232,7 +232,7 @@ async def http_server_custom_hosts(setup: Neo4jContainer):
         "run",
         "mcp-neo4j-cypher",
         "--transport",
-        "http",
+        "streamable-http",
         "--server-host",
         "127.0.0.1",
         "--server-port",

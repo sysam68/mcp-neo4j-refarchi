@@ -7,6 +7,7 @@ import tiktoken
 
 from mcp_neo4j_cypher.utils import (
     _truncate_string_to_tokens,
+    normalize_transport,
     parse_boolean_safely,
     process_config,
 )
@@ -90,7 +91,7 @@ def sample_cli_args(args_factory):
         username="testuser",
         password="testpass",
         database="testdb",
-        transport="http",
+        transport="streamable-http",
         server_host="localhost",
         server_port=9000,
         server_path="/test/",
@@ -150,7 +151,7 @@ def test_all_cli_args_provided(clean_env, sample_cli_args):
     assert config["username"] == "testuser"
     assert config["password"] == "testpass"
     assert config["database"] == "testdb"
-    assert config["transport"] == "http"
+    assert config["transport"] == "streamable-http"
     assert config["host"] == "localhost"
     assert config["port"] == 9000
     assert config["path"] == "/test/"
@@ -264,10 +265,10 @@ def test_stdio_transport_env_vars_ignored(clean_env, args_factory, mock_logger):
 
 def test_non_stdio_transport_uses_defaults(clean_env, args_factory, mock_logger):
     """Test that non-stdio transport uses default server config when not provided."""
-    args = args_factory(transport="http")
+    args = args_factory(transport="streamable-http")
     config = process_config(args)
 
-    assert config["transport"] == "http"
+    assert config["transport"] == "streamable-http"
     assert config["host"] == "127.0.0.1"
     assert config["port"] == 8000
     assert config["path"] == "/mcp/"
@@ -300,7 +301,7 @@ def test_non_stdio_transport_with_server_config(clean_env, args_factory, mock_lo
 def test_env_var_port_conversion(clean_env, args_factory, mock_logger):
     """Test that environment variable port is converted to int."""
     os.environ["NEO4J_MCP_SERVER_PORT"] = "8080"
-    os.environ["NEO4J_TRANSPORT"] = "http"
+    os.environ["NEO4J_TRANSPORT"] = "streamable-http"
 
     args = args_factory()
     config = process_config(args)
@@ -313,7 +314,7 @@ def test_env_var_port_conversion(clean_env, args_factory, mock_logger):
     "transport,expected_host,expected_port,expected_path,expected_warning_count",
     [
         ("stdio", None, None, None, 0),  # stdio with no server config
-        ("http", "127.0.0.1", 8000, "/mcp/", 3),  # http with defaults
+        ("streamable-http", "127.0.0.1", 8000, "/mcp/", 3),  # streamable HTTP with defaults
         ("sse", "127.0.0.1", 8000, "/mcp/", 3),  # sse with defaults
     ],
 )
@@ -358,6 +359,20 @@ def test_info_logging_stdio_transport(clean_env, args_factory, mock_logger):
     info_calls = [call.args[0] for call in mock_logger.info.call_args_list]
     stdio_info = [msg for msg in info_calls if "stdio" in msg]
     assert len(stdio_info) == 3  # host, port, path info messages
+
+
+def test_http_transport_alias_is_normalized(clean_env, args_factory):
+    """Test that the legacy http transport value is normalized."""
+    args = args_factory(transport="http")
+    config = process_config(args)
+
+    assert config["transport"] == "streamable-http"
+
+
+def test_normalize_transport_rejects_unknown_value():
+    """Test that unsupported transport values are rejected."""
+    with pytest.raises(ValueError, match="Invalid transport"):
+        normalize_transport("websocket")
 
 
 # CORS allow_origins tests

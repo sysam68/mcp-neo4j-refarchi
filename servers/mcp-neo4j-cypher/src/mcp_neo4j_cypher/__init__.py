@@ -13,7 +13,9 @@ def main():
     parser.add_argument("--password", default=None, help="Neo4j password")
     parser.add_argument("--database", default=None, help="Neo4j database name")
     parser.add_argument(
-        "--transport", default=None, help="Transport type (stdio, sse, http)"
+        "--transport",
+        default=None,
+        help="Transport type (stdio, sse, streamable-http; http kept as alias)",
     )
     parser.add_argument("--namespace", default=None, help="Tool namespace")
     parser.add_argument(

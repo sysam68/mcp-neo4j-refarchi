@@ -2,6 +2,7 @@ import builtins
 import inspect
 import json
 import logging
+import os
 import re
 from http import HTTPStatus
 from typing import Any, Literal, LiteralString, Optional, cast
@@ -9,6 +10,7 @@ from typing import Any, Literal, LiteralString, Optional, cast
 import anyio
 import httpx
 from fastmcp.exceptions import ResourceError, ToolError
+from fastmcp.resources.base import ResourceContent, ResourceResult
 from fastmcp.server import FastMCP
 from fastmcp.tools.tool import ToolResult  # type: ignore[reportPrivateImportUsage]
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
@@ -442,23 +444,41 @@ def _patch_mcp_send_log_message() -> None:
 
 def create_mcp_server(
     neo4j_driver: AsyncDriver,
-    database: str = "neo4j",
+    database: Optional[str] = None,
     namespace: str = "",
     read_timeout: int = 30,
     token_limit: Optional[int] = None,
     read_only: bool = False,
     config_sample_size: int = 1000,
-    embedding_base_url: str = "http://llm.shared.mpn:11434",
-    embedding_model: str = "nomic-embed-text-v2-moe:latest",
+    embedding_base_url: Optional[str] = None,
+    embedding_model: Optional[str] = None,
     embedding_timeout: int = 30,
 ) -> FastMCP:
     _patch_streamable_http_disconnect_handling()
     _patch_mcp_send_log_message()
 
-    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher")
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
+
+    resolved_database = database or os.getenv("NEO4J_DATABASE", "neo4j")
+    resolved_embedding_base_url = embedding_base_url or os.getenv(
+        "NEO4J_EMBEDDING_BASE_URL", "http://llm.shared.mpn:11434"
+    )
+    resolved_embedding_model = embedding_model or os.getenv(
+        "NEO4J_EMBEDDING_MODEL", "nomic-embed-text-v2-moe:latest"
+    )
+
+    async def _list_vector_indexes() -> list[dict[str, Any]]:
+        cypher = """
+SHOW INDEXES
+YIELD name, type, entityType, labelsOrTypes, properties, options
+WHERE type = 'VECTOR'
+RETURN name, entityType, labelsOrTypes, properties, options
+ORDER BY name
+"""
+        return await _execute_read_query(cypher)
 
     async def _execute_read_query(
         query: str, params: Optional[dict[str, Any]] = None
@@ -468,7 +488,7 @@ def create_mcp_server(
             query_obj,
             parameters_=params or {},
             routing_control=RoutingControl.READ,
-            database_=database,
+            database_=resolved_database,
             result_transformer_=lambda r: r.data(),
         )
 
@@ -488,9 +508,24 @@ def create_mcp_server(
             ]
         )
 
+    def _resource_result(
+        uri: str,
+        payload: Any,
+        mime_type: str,
+    ) -> ResourceResult:
+        return ResourceResult(
+            contents=[
+                ResourceContent(
+                    payload,
+                    mime_type=mime_type,
+                    meta={"uri": uri},
+                )
+            ]
+        )
+
     async def _get_embedding_from_ollama(text: str) -> list[float]:
-        url = f"{embedding_base_url.rstrip('/')}/api/embeddings"
-        payload = {"model": embedding_model, "prompt": text}
+        url = f"{resolved_embedding_base_url.rstrip('/')}/api/embeddings"
+        payload = {"model": resolved_embedding_model, "prompt": text}
 
         try:
             async with httpx.AsyncClient(timeout=embedding_timeout) as client:
@@ -589,6 +624,24 @@ def create_mcp_server(
             "properties": _value_sanitize(properties),
         }
 
+    def _modelization_node_from_row(row: dict[str, Any]) -> dict[str, Any]:
+        labels = row.get("labels") or []
+        if isinstance(labels, (set, tuple)):
+            labels = list(labels)
+        return {
+            "id": row.get("id"),
+            "label": row.get("label"),
+            "name": row.get("name"),
+            "modelizationClass": row.get("modelizationClass"),
+            "labels": _value_sanitize(labels),
+        }
+
+    def _parse_node_id(node_id: str) -> str:
+        parsed_node_id = str(node_id).strip()
+        if not parsed_node_id:
+            raise ResourceError("Invalid node id: empty value")
+        return parsed_node_id
+
     async def _read_schema(sample_size: int) -> dict[str, Any]:
         effective_sample_size = sample_size if sample_size else config_sample_size
         logger.info(
@@ -629,7 +682,7 @@ def create_mcp_server(
             raise _tool_error_json("Unexpected Error", details=str(e))
 
     @mcp.tool(
-        name=namespace_prefix + "get_db_labels",
+        name=namespace_prefix + "get_all_labels",
         annotations=ToolAnnotations(
             title="Get Neo4j Labels",
             readOnlyHint=True,
@@ -638,7 +691,7 @@ def create_mcp_server(
             openWorldHint=True,
         ),
     )
-    async def get_db_labels() -> ToolResult:
+    async def get_all_labels() -> ToolResult:
         """Return all labels in the Neo4j database."""
 
         get_labels_query = "CALL db.labels()"
@@ -661,6 +714,468 @@ def create_mcp_server(
             logger.error(f"Error executing label tool: {e}\n{get_labels_query}")
             raise _tool_error_json("Unexpected Error", details=str(e))
 
+    @mcp.tool(
+        name=namespace_prefix + "get_node_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Node By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_node_by_element_id(
+        element_id: str = Field(
+            ...,
+            description="Neo4j elementId of the node to retrieve.",
+        ),
+    ) -> ToolResult:
+        """Return one node by its Neo4j elementId."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        get_node_by_element_id_query = """
+MATCH (n)
+WHERE elementId(n) = $elementId
+RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties
+LIMIT 1
+"""
+
+        try:
+            results = await _execute_read_query(
+                get_node_by_element_id_query,
+                {"elementId": parsed_element_id},
+            )
+            payload = _node_from_row(results[0]) if results else None
+            return _tool_result(payload)
+
+        except Neo4jError as e:
+            logger.error(
+                "Neo4j Error executing get node by element id tool: "
+                f"{e}\n{get_node_by_element_id_query}\n{parsed_element_id}"
+            )
+            raise _tool_error_json(
+                "Neo4j Error",
+                details=str(e),
+                query=get_node_by_element_id_query,
+                element_id=parsed_element_id,
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error executing get node by element id tool: "
+                f"{e}\n{get_node_by_element_id_query}\n{parsed_element_id}"
+            )
+            raise _tool_error_json("Unexpected Error", details=str(e))
+
+    @mcp.tool(
+        name=namespace_prefix + "get_nodes_by_element_ids",
+        annotations=ToolAnnotations(
+            title="Get Nodes By Element IDs",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_nodes_by_element_ids(
+        element_ids: list[str] = Field(
+            ...,
+            description="List of Neo4j elementIds to retrieve.",
+        ),
+    ) -> ToolResult:
+        """Return multiple nodes by their Neo4j elementIds."""
+
+        parsed_element_ids = [_parse_node_id(element_id) for element_id in element_ids]
+        get_nodes_by_element_ids_query = """
+MATCH (n)
+WHERE elementId(n) IN $elementIds
+RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties
+"""
+
+        try:
+            results = await _execute_read_query(
+                get_nodes_by_element_ids_query,
+                {"elementIds": parsed_element_ids},
+            )
+            nodes_by_id = {
+                str(row.get("id")): _node_from_row(row)
+                for row in results
+            }
+            payload = [
+                nodes_by_id.get(element_id)
+                for element_id in parsed_element_ids
+            ]
+            return _tool_result(payload)
+
+        except Neo4jError as e:
+            logger.error(
+                "Neo4j Error executing get nodes by element ids tool: "
+                f"{e}\n{get_nodes_by_element_ids_query}\n{parsed_element_ids}"
+            )
+            raise _tool_error_json(
+                "Neo4j Error",
+                details=str(e),
+                query=get_nodes_by_element_ids_query,
+                element_ids=parsed_element_ids,
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error executing get nodes by element ids tool: "
+                f"{e}\n{get_nodes_by_element_ids_query}\n{parsed_element_ids}"
+            )
+            raise _tool_error_json("Unexpected Error", details=str(e))
+
+    async def _fetch_label_nodes(label: str) -> list[dict[str, Any]]:
+        get_labels_by_name_query = """
+WITH toLower($targetLabel) AS targetLabelLower
+MATCH (n)
+WHERE any(label IN labels(n)
+          WHERE toLower(label) = targetLabelLower)
+RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties
+"""
+        results = await _execute_read_query(
+            get_labels_by_name_query, {"targetLabel": label}
+        )
+        return [_node_from_row(row) for row in results]
+
+    async def _fetch_related_nodes(node_id: str) -> list[dict[str, Any]]:
+        related_nodes_query = """
+MATCH (source)-[r]-(target)
+WHERE elementId(source) = $nodeId
+RETURN
+    type(r) AS relationship_type,
+    CASE
+        WHEN startNode(r) = source THEN 'outgoing'
+        ELSE 'incoming'
+    END AS direction,
+    properties(r) AS relationship_properties,
+    elementId(target) AS id,
+    labels(target) AS labels,
+    properties(target) AS properties
+ORDER BY relationship_type, id
+"""
+        results = await _execute_read_query(
+            related_nodes_query,
+            {"nodeId": node_id},
+        )
+        return [
+            {
+                "relationship_type": row.get("relationship_type"),
+                "direction": row.get("direction"),
+                "relationship_properties": _value_sanitize(
+                    row.get("relationship_properties") or {}
+                ),
+                "node": _node_from_row(row),
+            }
+            for row in results
+        ]
+
+    async def _fetch_node_attributes(node_id: str) -> dict[str, Any] | None:
+        node_attributes_query = """
+MATCH (n)
+WHERE elementId(n) = $nodeId
+RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties
+LIMIT 1
+"""
+        results = await _execute_read_query(
+            node_attributes_query,
+            {"nodeId": node_id},
+        )
+        return _node_from_row(results[0]) if results else None
+
+    async def _fetch_modelization_context(node_id: str) -> dict[str, Any] | None:
+        anchor_query = """
+MATCH (n)
+WHERE elementId(n) = $nodeId
+RETURN
+    elementId(n) AS id,
+    labels(n) AS labels,
+    coalesce(n.label, n.name, n.title, n.id, elementId(n)) AS label,
+    n.name AS name,
+    n.modelizationClass AS modelizationClass
+LIMIT 1
+"""
+        outgoing_query = """
+MATCH (source)-[r]->(target)
+WHERE elementId(source) = $nodeId
+RETURN
+    type(r) AS relationship_type,
+    elementId(target) AS id,
+    labels(target) AS labels,
+    coalesce(target.label, target.name, target.title, target.id, elementId(target)) AS label,
+    target.name AS name,
+    target.modelizationClass AS modelizationClass
+ORDER BY relationship_type, id
+"""
+        incoming_query = """
+MATCH (source)-[r]->(target)
+WHERE elementId(target) = $nodeId
+RETURN
+    type(r) AS relationship_type,
+    elementId(source) AS id,
+    labels(source) AS labels,
+    coalesce(source.label, source.name, source.title, source.id, elementId(source)) AS label,
+    source.name AS name,
+    source.modelizationClass AS modelizationClass
+ORDER BY relationship_type, id
+"""
+
+        anchor_rows = await _execute_read_query(anchor_query, {"nodeId": node_id})
+        if not anchor_rows:
+            return None
+
+        outgoing_rows = await _execute_read_query(outgoing_query, {"nodeId": node_id})
+        incoming_rows = await _execute_read_query(incoming_query, {"nodeId": node_id})
+
+        return {
+            "node": _modelization_node_from_row(anchor_rows[0]),
+            "outgoing_relationships": [
+                {
+                    "relationship_type": row.get("relationship_type"),
+                    "direction": "outgoing",
+                    "target": _modelization_node_from_row(row),
+                }
+                for row in outgoing_rows
+            ],
+            "incoming_relationships": [
+                {
+                    "relationship_type": row.get("relationship_type"),
+                    "direction": "incoming",
+                    "source": _modelization_node_from_row(row),
+                }
+                for row in incoming_rows
+            ],
+        }
+
+    async def _fetch_specialization_parents(node_id: str) -> list[dict[str, Any]]:
+        specialization_parents_query = """
+MATCH path = (child)-[:SpecializationRelationships*1..]->(parent)
+WHERE elementId(child) = $nodeId
+WITH parent, min(length(path)) AS depth
+RETURN
+    depth,
+    elementId(parent) AS id,
+    labels(parent) AS labels,
+    properties(parent) AS properties
+ORDER BY depth, id
+"""
+        results = await _execute_read_query(
+            specialization_parents_query,
+            {"nodeId": node_id},
+        )
+        return [
+            {
+                "depth": row.get("depth"),
+                "relationship_type": "SpecializationRelationships",
+                "node": _node_from_row(row),
+            }
+            for row in results
+        ]
+
+    async def _fetch_specialization_children(node_id: str) -> list[dict[str, Any]]:
+        specialization_children_query = """
+MATCH path = (child)-[:SpecializationRelationships*1..]->(parent)
+WHERE elementId(parent) = $nodeId
+WITH child, min(length(path)) AS depth
+RETURN
+    depth,
+    elementId(child) AS id,
+    labels(child) AS labels,
+    properties(child) AS properties
+ORDER BY depth, id
+"""
+        results = await _execute_read_query(
+            specialization_children_query,
+            {"nodeId": node_id},
+        )
+        return [
+            {
+                "depth": row.get("depth"),
+                "relationship_type": "SpecializationRelationships",
+                "node": _node_from_row(row),
+            }
+            for row in results
+        ]
+
+    @mcp.tool(
+        name=namespace_prefix + "find_nodes_by_label",
+        annotations=ToolAnnotations(
+            title="Find Nodes By Label",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def find_nodes_by_label(
+        label: str = Field(
+            ...,
+            description="Label name to match (case-insensitive).",
+        ),
+    ) -> ToolResult:
+        """Return nodes matching a label name, case-insensitively."""
+
+        try:
+            return _tool_result(await _fetch_label_nodes(label))
+        except Neo4jError as e:
+            raise _tool_error_json("Neo4j Error", details=str(e), label=label)
+        except Exception as e:
+            raise _tool_error_json("Unexpected Error", details=str(e), label=label)
+
+    @mcp.tool(
+        name=namespace_prefix + "get_directly_related_nodes_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Directly Related Nodes By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_directly_related_nodes_by_element_id(
+        element_id: str = Field(
+            ...,
+            description="Neo4j elementId used as the anchor for direct relationship lookup.",
+        ),
+    ) -> ToolResult:
+        """Return all nodes directly related to the given Neo4j elementId."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        try:
+            return _tool_result(await _fetch_related_nodes(parsed_element_id))
+        except Neo4jError as e:
+            raise _tool_error_json(
+                "Neo4j Error", details=str(e), element_id=parsed_element_id
+            )
+        except Exception as e:
+            raise _tool_error_json(
+                "Unexpected Error", details=str(e), element_id=parsed_element_id
+            )
+
+    @mcp.tool(
+        name=namespace_prefix + "get_node_attributes_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Node Attributes By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_node_attributes_by_element_id(
+        element_id: str = Field(
+            ...,
+            description="Neo4j elementId used to fetch labels and properties.",
+        ),
+    ) -> ToolResult:
+        """Return labels and properties for a Neo4j elementId."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        try:
+            return _tool_result(await _fetch_node_attributes(parsed_element_id))
+        except Neo4jError as e:
+            raise _tool_error_json(
+                "Neo4j Error", details=str(e), element_id=parsed_element_id
+            )
+        except Exception as e:
+            raise _tool_error_json(
+                "Unexpected Error", details=str(e), element_id=parsed_element_id
+            )
+
+    @mcp.tool(
+        name=namespace_prefix + "get_modelization_context_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Modelization Context By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_modelization_context_by_element_id(
+        element_id: str = Field(
+            ...,
+            description=(
+                "Neo4j elementId used to fetch modelizationClass plus first-level "
+                "incoming and outgoing relationships."
+            ),
+        ),
+    ) -> ToolResult:
+        """Return a PlantUML-friendly JSON view of a node and its direct graph context."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        try:
+            return _tool_result(await _fetch_modelization_context(parsed_element_id))
+        except Neo4jError as e:
+            raise _tool_error_json(
+                "Neo4j Error", details=str(e), element_id=parsed_element_id
+            )
+        except Exception as e:
+            raise _tool_error_json(
+                "Unexpected Error", details=str(e), element_id=parsed_element_id
+            )
+
+    @mcp.tool(
+        name=namespace_prefix + "get_specialization_parents_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Specialization Parents By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_specialization_parents_by_element_id(
+        element_id: str = Field(
+            ...,
+            description="Neo4j elementId used as the child node in the specialization chain.",
+        ),
+    ) -> ToolResult:
+        """Return all parent nodes in the specialization chain for a Neo4j elementId."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        try:
+            return _tool_result(await _fetch_specialization_parents(parsed_element_id))
+        except Neo4jError as e:
+            raise _tool_error_json(
+                "Neo4j Error", details=str(e), element_id=parsed_element_id
+            )
+        except Exception as e:
+            raise _tool_error_json(
+                "Unexpected Error", details=str(e), element_id=parsed_element_id
+            )
+
+    @mcp.tool(
+        name=namespace_prefix + "get_specialization_children_by_element_id",
+        annotations=ToolAnnotations(
+            title="Get Specialization Children By Element ID",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def get_specialization_children_by_element_id(
+        element_id: str = Field(
+            ...,
+            description="Neo4j elementId used as the parent node in the specialization chain.",
+        ),
+    ) -> ToolResult:
+        """Return all child nodes in the specialization chain for a Neo4j elementId."""
+
+        parsed_element_id = _parse_node_id(element_id)
+        try:
+            return _tool_result(await _fetch_specialization_children(parsed_element_id))
+        except Neo4jError as e:
+            raise _tool_error_json(
+                "Neo4j Error", details=str(e), element_id=parsed_element_id
+            )
+        except Exception as e:
+            raise _tool_error_json(
+                "Unexpected Error", details=str(e), element_id=parsed_element_id
+            )
+
     @mcp.resource(
         "resource://neo4j/labels/{label}",
         name="check_label_existance",
@@ -673,40 +1188,143 @@ def create_mcp_server(
             ...,
             description="Label name to match (case-insensitive).",
         ),
-    ) -> list[dict[str, Any]]:
+    ) -> ResourceResult:
         """Find nodes that match a label name, case-insensitively."""
 
-        get_labels_by_name_query = """
-WITH toLower($targetLabel) AS targetLabelLower
-MATCH (n)
-WHERE any(label IN labels(n)
-          WHERE toLower(label) = targetLabelLower)
-RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
-"""
-
         try:
-            results = await _execute_read_query(
-                get_labels_by_name_query, {"targetLabel": label}
-            )
-            sanitized_results = [_node_from_row(row) for row in results]
+            sanitized_results = await _fetch_label_nodes(label)
             logger.debug(f"Label resource query returned {len(sanitized_results)} rows")
-            return sanitized_results
+            return _resource_result(
+                f"resource://neo4j/labels/{label}",
+                sanitized_results,
+                "application/json",
+            )
 
         except Neo4jError as e:
-            logger.error(
-                "Neo4j Error executing label resource query: "
-                f"{e}\n{get_labels_by_name_query}\n{label}"
-            )
-            raise ResourceError(
-                f"Neo4j Error: {e}\n{get_labels_by_name_query}\n{label}"
-            )
+            raise ResourceError(f"Neo4j Error: {e}\n{label}")
 
         except Exception as e:
-            logger.error(
-                "Error executing label resource query: "
-                f"{e}\n{get_labels_by_name_query}\n{label}"
+            raise ResourceError(f"Error: {e}\n{label}")
+
+    @mcp.resource(
+        "resource://neo4j/nodes/{node_id}/related-nodes",
+        name="get_directly_related_nodes",
+        title="Directly Related Nodes",
+        description="Nodes directly connected to the given node id.",
+        mime_type="application/json",
+    )
+    async def neo4j_related_nodes(
+        node_id: str = Field(
+            ...,
+            description="Node id used as the anchor for direct relationship lookup.",
+        ),
+    ) -> ResourceResult:
+        """Return all nodes directly related to the given node id."""
+
+        parsed_node_id = _parse_node_id(node_id)
+
+        try:
+            payload = await _fetch_related_nodes(parsed_node_id)
+            return _resource_result(
+                f"resource://neo4j/nodes/{parsed_node_id}/related-nodes",
+                payload,
+                "application/json",
             )
-            raise ResourceError(f"Error: {e}\n{get_labels_by_name_query}\n{label}")
+        except Neo4jError as exc:
+            raise ResourceError(f"Neo4j Error: {exc}\n{parsed_node_id}")
+        except Exception as exc:
+            raise ResourceError(f"Error: {exc}\n{parsed_node_id}")
+
+    @mcp.resource(
+        "resource://neo4j/nodes/{node_id}/attributes",
+        name="get_node_attributes",
+        title="Node Attributes",
+        description="All attributes for the given node id.",
+        mime_type="application/json",
+    )
+    async def neo4j_node_attributes(
+        node_id: str = Field(
+            ...,
+            description="Node id used to fetch labels and properties.",
+        ),
+    ) -> ResourceResult:
+        """Return labels and properties for a node id."""
+
+        parsed_node_id = _parse_node_id(node_id)
+
+        try:
+            payload = await _fetch_node_attributes(parsed_node_id)
+            return _resource_result(
+                f"resource://neo4j/nodes/{parsed_node_id}/attributes",
+                payload,
+                "application/json",
+            )
+        except Neo4jError as exc:
+            raise ResourceError(f"Neo4j Error: {exc}\n{parsed_node_id}")
+        except Exception as exc:
+            raise ResourceError(f"Error: {exc}\n{parsed_node_id}")
+
+    @mcp.resource(
+        "resource://neo4j/nodes/{node_id}/specialization-parents",
+        name="get_specialization_parents",
+        title="Specialization Parent Chain",
+        description=(
+            "Parent nodes reached through outgoing SpecializationRelationships."
+        ),
+        mime_type="application/json",
+    )
+    async def neo4j_specialization_parents(
+        node_id: str = Field(
+            ...,
+            description="Node id used as the child node in the specialization chain.",
+        ),
+    ) -> ResourceResult:
+        """Return all parent nodes in the specialization chain for a node id."""
+
+        parsed_node_id = _parse_node_id(node_id)
+
+        try:
+            payload = await _fetch_specialization_parents(parsed_node_id)
+            return _resource_result(
+                f"resource://neo4j/nodes/{parsed_node_id}/specialization-parents",
+                payload,
+                "application/json",
+            )
+        except Neo4jError as exc:
+            raise ResourceError(f"Neo4j Error: {exc}\n{parsed_node_id}")
+        except Exception as exc:
+            raise ResourceError(f"Error: {exc}\n{parsed_node_id}")
+
+    @mcp.resource(
+        "resource://neo4j/nodes/{node_id}/specialization-children",
+        name="get_specialization_children",
+        title="Specialization Child Chain",
+        description=(
+            "Child nodes reached through incoming SpecializationRelationships."
+        ),
+        mime_type="application/json",
+    )
+    async def neo4j_specialization_children(
+        node_id: str = Field(
+            ...,
+            description="Node id used as the parent node in the specialization chain.",
+        ),
+    ) -> ResourceResult:
+        """Return all child nodes in the specialization chain for a node id."""
+
+        parsed_node_id = _parse_node_id(node_id)
+
+        try:
+            payload = await _fetch_specialization_children(parsed_node_id)
+            return _resource_result(
+                f"resource://neo4j/nodes/{parsed_node_id}/specialization-children",
+                payload,
+                "application/json",
+            )
+        except Neo4jError as exc:
+            raise ResourceError(f"Neo4j Error: {exc}\n{parsed_node_id}")
+        except Exception as exc:
+            raise ResourceError(f"Error: {exc}\n{parsed_node_id}")
 
     @mcp.resource(
         "resource://neo4j/refarchi",
@@ -717,17 +1335,36 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
     )
     async def neo4j_refarchi() -> str:
         """Provide reference guidance for label lookup and schema access."""
-        return (
+        return _resource_result(
+            "resource://neo4j/refarchi",
             "Reference usage guide for MCP Neo4j tools and resources.\n\n"
             "1) List all labels:\n"
-            "Use the tool `get_db_labels` to fetch every label in the database.\n\n"
+            "Use the tool `get_all_labels` to fetch every label in the database.\n\n"
             "2) Check label existence and fetch nodes:\n"
             "Read `resource://neo4j/labels/{label}` (name: check_label_existance).\n"
             "The lookup is case-insensitive and returns a JSON array of nodes.\n\n"
+            "3) Inspect graph navigation around a node id:\n"
+            "Read `resource://neo4j/nodes/{node_id}/related-nodes` to fetch all "
+            "direct neighbors.\n"
+            "Use the tool `get_modelization_context_by_element_id` to fetch a "
+            "PlantUML-friendly JSON payload with `modelizationClass` and "
+            "first-level incoming/outgoing relationships.\n"
+            "Read `resource://neo4j/nodes/{node_id}/attributes` to fetch all "
+            "labels and properties for a node.\n"
+            "Read `resource://neo4j/nodes/{node_id}/specialization-parents` to "
+            "walk the outgoing `SpecializationRelationships` chain.\n"
+            "Read `resource://neo4j/nodes/{node_id}/specialization-children` to "
+            "walk the incoming `SpecializationRelationships` chain.\n\n"
             "Example MCP calls:\n"
-            '- tools/call: {"name": "get_db_labels", "arguments": {}}\n'
+            '- tools/call: {"name": "get_all_labels", "arguments": {}}\n'
+            '- tools/call: {"name": "get_modelization_context_by_element_id", "arguments": {"element_id": "4:abc"}}\n'
             '- resources/read: {"uri": "resource://neo4j/labels/Person"}\n\n'
-            "All tools are read-only, idempotent, and safe to call repeatedly."
+            '- resources/read: {"uri": "resource://neo4j/nodes/42/related-nodes"}\n'
+            '- resources/read: {"uri": "resource://neo4j/nodes/42/attributes"}\n'
+            '- resources/read: {"uri": "resource://neo4j/nodes/42/specialization-parents"}\n'
+            '- resources/read: {"uri": "resource://neo4j/nodes/42/specialization-children"}\n\n'
+            "All tools are read-only, idempotent, and safe to call repeatedly.",
+            "text/plain",
         )
 
     @mcp.prompt(title="Neo4j Reference Architecture")
@@ -740,7 +1377,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
         )
 
     @mcp.tool(
-        name=namespace_prefix + "get_coreConcept",
+        name=namespace_prefix + "get_core_concept",
         annotations=ToolAnnotations(
             title="Get coreConcept Nodes",
             readOnlyHint=True,
@@ -754,7 +1391,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
 
         get_core_concept_query = (
             "MATCH (n:coreConcept) "
-            "RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties"
+            "RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties"
         )
 
         try:
@@ -827,7 +1464,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
                 query_obj,
                 parameters_=params,
                 routing_control=RoutingControl.READ,
-                database_=database,
+                database_=resolved_database,
                 result_transformer_=lambda r: r.data(),
             )
             sanitized_results = [_value_sanitize(el) for el in results]
@@ -857,7 +1494,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
             raise ToolError(f"Error: {e}\n{query}\n{params}")
 
     @mcp.tool(
-        name=namespace_prefix + "neo4j_vector_search",
+        name=namespace_prefix + "vector_search",
         annotations=ToolAnnotations(
             title="Neo4j Vector Search",
             readOnlyHint=True,
@@ -866,7 +1503,7 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
             openWorldHint=True,
         ),
     )
-    async def neo4j_vector_search(
+    async def vector_search(
         index_name: str = Field(..., description="Neo4j vector index name."),
         query_text: Optional[str] = Field(
             default=None,
@@ -888,8 +1525,26 @@ RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
 
         if query_embedding is None and not query_text:
             raise ToolError(
-                "neo4j_vector_search requires either query_embedding or query_text."
+                "vector_search requires either query_embedding or query_text."
             )
+
+        if index_name == "default":
+            available = await _list_vector_indexes()
+            available_names = [
+                row.get("name") for row in available if isinstance(row.get("name"), str)
+            ]
+            if len(available_names) == 1:
+                index_name = cast(str, available_names[0])
+            else:
+                raise ToolError(
+                    json.dumps(
+                        {
+                            "error": "Unknown vector index: default",
+                            "available_vector_indexes": available_names,
+                            "hint": "Provide index_name from available_vector_indexes or create a Neo4j VECTOR index.",
+                        }
+                    )
+                )
 
         embedding = query_embedding
         if embedding is None:
@@ -903,7 +1558,7 @@ YIELD node, score
 RETURN elementId(node) AS id,
        labels(node) AS labels,
        score AS score,
-       reduce(m = {}, k IN $return_properties | m + { [k]: node[k] }) AS properties
+       [k IN $return_properties | {key: k, value: node[k]}] AS properties
 """
 
         try:
@@ -916,9 +1571,34 @@ RETURN elementId(node) AS id,
                     "return_properties": props,
                 },
             )
+            for row in results:
+                pairs = row.get("properties")
+                if isinstance(pairs, list):
+                    row["properties"] = {
+                        pair.get("key"): pair.get("value")
+                        for pair in pairs
+                        if isinstance(pair, dict) and pair.get("key") is not None
+                    }
             sanitized_results = [_value_sanitize(row) for row in results]
             return _tool_result(sanitized_results)
         except Neo4jError as e:
+            msg = str(e)
+            if "There is no such vector schema index" in msg:
+                available = await _list_vector_indexes()
+                available_names = [
+                    row.get("name")
+                    for row in available
+                    if isinstance(row.get("name"), str)
+                ]
+                raise ToolError(
+                    json.dumps(
+                        {
+                            "error": "Vector index not found",
+                            "index_name": index_name,
+                            "available_vector_indexes": available_names,
+                        }
+                    )
+                )
             logger.error(f"Neo4j Error executing vector search: {e}\n{cypher}")
             raise ToolError(f"Neo4j Error: {e}\n{cypher}")
         except Exception as e:
@@ -926,56 +1606,84 @@ RETURN elementId(node) AS id,
             raise ToolError(f"Error: {e}\n{cypher}")
 
     @mcp.tool(
-        name=namespace_prefix + TOOL_NAMES["write"],
+        name=namespace_prefix + "get_index_list",
         annotations=ToolAnnotations(
-            title="Write Neo4j Cypher",
-            readOnlyHint=False,
-            destructiveHint=True,
-            idempotentHint=False,
+            title="Neo4j Vector Index List",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
             openWorldHint=True,
         ),
-        enabled=allow_writes,
     )
-    async def write_neo4j_cypher(
-        query: str = Field(..., description="The Cypher query to execute."),
-        params: dict[str, Any] = Field(
-            dict(), description="The parameters to pass to the Cypher query."
+    async def get_index_list(
+        include_details: bool = Field(
+            default=False,
+            description="Include index details (labels/types, properties, options).",
         ),
     ) -> ToolResult:
-        """Execute a write Cypher query on the neo4j database."""
+        """List available Neo4j VECTOR indexes for vector_search."""
 
-        if not _is_write_query(query):
-            raise ValueError("Only write queries are allowed for write-query")
+        indexes = await _list_vector_indexes()
+        if include_details:
+            sanitized = [_value_sanitize(row) for row in indexes]
+            return _tool_result(sanitized)
 
-        try:
-            query_obj = Query(cast(LiteralString, query))
-            _, summary, _ = await neo4j_driver.execute_query(
-                query_obj,
-                parameters_=params,
-                routing_control=RoutingControl.WRITE,
-                database_=database,
-            )
+        names = [
+            row.get("name") for row in indexes if isinstance(row.get("name"), str)
+        ]
+        return _tool_result(names)
 
-            counters_json_str = json.dumps(summary.counters.__dict__, default=str)
+    if allow_writes:
+        @mcp.tool(
+            name=namespace_prefix + TOOL_NAMES["write"],
+            annotations=ToolAnnotations(
+                title="Write Neo4j Cypher",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            ),
+        )
+        async def write_neo4j_cypher(
+            query: str = Field(..., description="The Cypher query to execute."),
+            params: dict[str, Any] = Field(
+                dict(), description="The parameters to pass to the Cypher query."
+            ),
+        ) -> ToolResult:
+            """Execute a write Cypher query on the neo4j database."""
 
-            logger.debug(f"Write query affected {counters_json_str}")
+            if not _is_write_query(query):
+                raise ValueError("Only write queries are allowed for write-query")
 
-            return ToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=cast(LiteralString, counters_json_str),
-                    )
-                ]
-            )
+            try:
+                query_obj = Query(cast(LiteralString, query))
+                _, summary, _ = await neo4j_driver.execute_query(
+                    query_obj,
+                    parameters_=params,
+                    routing_control=RoutingControl.WRITE,
+                    database_=resolved_database,
+                )
 
-        except Neo4jError as e:
-            logger.error(f"Neo4j Error executing write query: {e}\n{query}\n{params}")
-            raise ToolError(f"Neo4j Error: {e}\n{query}\n{params}")
+                counters_json_str = json.dumps(summary.counters.__dict__, default=str)
 
-        except Exception as e:
-            logger.error(f"Error executing write query: {e}\n{query}\n{params}")
-            raise ToolError(f"Error: {e}\n{query}\n{params}")
+                logger.debug(f"Write query affected {counters_json_str}")
+
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=cast(LiteralString, counters_json_str),
+                        )
+                    ]
+                )
+
+            except Neo4jError as e:
+                logger.error(f"Neo4j Error executing write query: {e}\n{query}\n{params}")
+                raise ToolError(f"Neo4j Error: {e}\n{query}\n{params}")
+
+            except Exception as e:
+                logger.error(f"Error executing write query: {e}\n{query}\n{params}")
+                raise ToolError(f"Error: {e}\n{query}\n{params}")
 
     return mcp
 
@@ -985,7 +1693,7 @@ async def main(
     username: str,
     password: str,
     database: str,
-    transport: Literal["stdio", "sse", "http"] = "stdio",
+    transport: Literal["stdio", "sse", "http", "streamable-http"] = "stdio",
     namespace: str = "",
     host: Optional[str] = "127.0.0.1",
     port: Optional[int] = 8000,
@@ -998,8 +1706,8 @@ async def main(
     schema_sample_size: Optional[
         int
     ] = None,  # this is known as the config_sample_size in the create_mcp_server function
-    embedding_base_url: str = "http://llm.shared.mpn:11434",
-    embedding_model: str = "nomic-embed-text-v2-moe:latest",
+    embedding_base_url: Optional[str] = None,
+    embedding_model: Optional[str] = None,
     embedding_timeout: int = 30,
 ) -> None:
     logger.info("Starting MCP neo4j Server")
@@ -1042,18 +1750,19 @@ async def main(
 
     # Run the server with the specified transport
     match transport:
-        case "http":
+        case "http" | "streamable-http":
             http_host = host or "127.0.0.1"
             http_port = port or 8000
             http_path = path or "/mcp/"
             logger.info(
-                f"Running Neo4j Cypher MCP Server with HTTP transport on {http_host}:{http_port}..."
+                f"Running Neo4j Cypher MCP Server with streamable HTTP transport on {http_host}:{http_port}..."
             )
             await mcp.run_http_async(
                 host=http_host,
                 port=http_port,
                 path=http_path,
                 middleware=custom_middleware,
+                stateless_http=True,
             )
         case "stdio":
             logger.info("Running Neo4j Cypher MCP Server with stdio transport...")
@@ -1071,13 +1780,14 @@ async def main(
                 path=sse_path,
                 middleware=custom_middleware,
                 transport="sse",
+                stateless_http=False,
             )
         case _:
             logger.error(
-                f"Invalid transport: {transport} | Must be either 'stdio', 'sse', or 'http'"
+                f"Invalid transport: {transport} | Must be either 'stdio', 'sse', or 'streamable-http'"
             )
             raise ValueError(
-                f"Invalid transport: {transport} | Must be either 'stdio', 'sse', or 'http'"
+                f"Invalid transport: {transport} | Must be either 'stdio', 'sse', or 'streamable-http'"
             )
 
 

@@ -42,7 +42,7 @@ The server offers these core tools:
   - Returns: A JSON serialized result summary counter with `{ nodes_updated: number, relationships_created: number, ... }`
   - **Availability**: May be disabled by supplying --read-only as cli flag or `NEO4J_READ_ONLY=true` environment variable
 
-- `neo4j_vector_search`
+- `vector_search`
   - Perform vector similarity search against a Neo4j vector index
   - Input:
     - `index_name` (string): Neo4j vector index name (e.g., `vec_all_nodes_embedding`)
@@ -54,11 +54,59 @@ The server offers these core tools:
 
 #### 📌 Reference Tools
 
-- `get_db_labels`
+- `get_all_labels`
   - Return all labels present in the database
   - Returns: JSON array of label strings
 
-- `get_coreConcept`
+- `get_node_by_element_id`
+  - Return one node from its Neo4j `elementId`
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId` of the node
+  - Returns: JSON object with `id`, `labels`, and `properties`, or `null` if the node does not exist
+
+- `get_nodes_by_element_ids`
+  - Return multiple nodes from their Neo4j `elementId` values
+  - Input:
+    - `element_ids` (array of strings, required): Neo4j `elementId` values
+  - Returns: JSON array aligned with the input order, with node objects or `null` for missing nodes
+
+- `find_nodes_by_label`
+  - Return nodes matching a label name, case-insensitively
+  - Input:
+    - `label` (string, required): label name
+  - Returns: JSON array of nodes with `id`, `labels`, and `properties`
+
+- `get_directly_related_nodes_by_element_id`
+  - Return nodes directly connected to a Neo4j `elementId`
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId`
+  - Returns: JSON array with `relationship_type`, `direction`, `relationship_properties`, and `node`
+
+- `get_node_attributes_by_element_id`
+  - Return labels and properties for a Neo4j `elementId`
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId`
+  - Returns: JSON object with `id`, `labels`, and `properties`, or `null` if the node does not exist
+
+- `get_modelization_context_by_element_id`
+  - Return a PlantUML-friendly JSON view of one node and its first-level relationships
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId`
+  - Returns: JSON object with anchor `node` (`id`, `label`, `name`, `modelizationClass`, `labels`), `outgoing_relationships`, and `incoming_relationships`
+
+- `get_specialization_parents_by_element_id`
+  - Return specialization parents for a Neo4j `elementId`
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId`
+  - Returns: JSON array ordered by `depth`, each row containing `relationship_type`, `depth`, and `node`
+
+- `get_specialization_children_by_element_id`
+  - Return specialization children for a Neo4j `elementId`
+  - Input:
+    - `element_id` (string, required): Neo4j `elementId`
+  - Returns: JSON array ordered by `depth`, each row containing `relationship_type`, `depth`, and `node`
+
+- `get_core_concept`
   - Return nodes labeled `coreConcept`
   - Returns: JSON array of objects with `id`, `labels`, and `properties`
 
@@ -74,8 +122,24 @@ The server offers these core tools:
   - Find nodes matching a label name (case-insensitive)
   - Returns: JSON array of nodes with `id`, `labels`, and `properties`
 
+- `resource://neo4j/nodes/{node_id}/related-nodes` (name: `get_directly_related_nodes`)
+  - Return all nodes directly connected to the given Neo4j `elementId`
+  - Returns: JSON array with `relationship_type`, `direction`, `relationship_properties`, and `node`
+
+- `resource://neo4j/nodes/{node_id}/attributes` (name: `get_node_attributes`)
+  - Return all labels and properties for the given Neo4j `elementId`
+  - Returns: JSON object with `id`, `labels`, and `properties`, or `null` if the node does not exist
+
+- `resource://neo4j/nodes/{node_id}/specialization-parents` (name: `get_specialization_parents`)
+  - Follow outgoing `SpecializationRelationships` from the given Neo4j `elementId`
+  - Returns: JSON array ordered by `depth`, each row containing `relationship_type`, `depth`, and `node`
+
+- `resource://neo4j/nodes/{node_id}/specialization-children` (name: `get_specialization_children`)
+  - Follow incoming `SpecializationRelationships` from the given Neo4j `elementId`
+  - Returns: JSON array ordered by `depth`, each row containing `relationship_type`, `depth`, and `node`
+
 - `resource://neo4j/refarchi`
-  - Reference guide for label lookup and schema access
+  - Reference guide for label lookup, node inspection, and specialization traversal
   - Returns: Plain-text guidance with example MCP calls
 
 ### 💬 Prompts
@@ -88,7 +152,7 @@ The server offers these core tools:
 The legacy dynamic resources `resource://neo4j/schema`, `resource://neo4j/labels`,
 and `resource://neo4j/core-concepts`, along with prompts
 `neo4j_label_lookup` and `neo4j_core_concepts_prompt`, are removed. Use the
-read-only tools (`get_db_labels`, `get_coreConcept`, `neo4j_schema_snapshot`)
+read-only tools (`get_all_labels`, `get_node_by_element_id`, `get_nodes_by_element_ids`, `find_nodes_by_label`, `get_directly_related_nodes_by_element_id`, `get_node_attributes_by_element_id`, `get_modelization_context_by_element_id`, `get_specialization_parents_by_element_id`, `get_specialization_children_by_element_id`, `get_core_concept`, `neo4j_schema_snapshot`)
 and the `resource://neo4j/refarchi` guidance instead. This is a breaking change
 and should be released with a major version bump.
 
@@ -289,14 +353,14 @@ export NEO4J_MCP_SERVER_ALLOW_ORIGINS="https://example.com,https://example.com"
 
 **Development Setup:**
 ```bash
-mcp-neo4j-cypher --transport http \
+mcp-neo4j-cypher --transport streamable-http \
   --allowed-hosts "localhost,127.0.0.1" \
   --allow-origins "http://localhost:3000"
 ```
 
 **Production Setup:**
 ```bash
-mcp-neo4j-cypher --transport http \
+mcp-neo4j-cypher --transport streamable-http \
   --allowed-hosts "example.com,www.example.com" \
   --allow-origins "https://example.com,https://example.com"
 ```
@@ -349,7 +413,7 @@ For custom HTTP configurations with security middleware:
 
 ```bash
 # Complete HTTP configuration with security
-mcp-neo4j-cypher --transport http \
+mcp-neo4j-cypher --transport streamable-http \
   --server-host 127.0.0.1 \
   --server-port 8080 \
   --server-path /api/mcp/ \
@@ -357,7 +421,7 @@ mcp-neo4j-cypher --transport http \
   --allow-origins "https://yourapp.com"
 
 # Using environment variables
-export NEO4J_TRANSPORT=http
+export NEO4J_TRANSPORT=streamable-http
 export NEO4J_MCP_SERVER_HOST=127.0.0.1
 export NEO4J_MCP_SERVER_PORT=8080
 export NEO4J_MCP_SERVER_PATH=/api/mcp/
@@ -492,7 +556,7 @@ docker run --rm -p 8000:8000 \
   -e NEO4J_USERNAME="neo4j" \
   -e NEO4J_PASSWORD="password" \
   -e NEO4J_DATABASE="neo4j" \
-  -e NEO4J_TRANSPORT="http" \
+  -e NEO4J_TRANSPORT="streamable-http" \
   -e NEO4J_MCP_SERVER_HOST="0.0.0.0" \
   -e NEO4J_MCP_SERVER_PORT="8000" \
   -e NEO4J_MCP_SERVER_PATH="/mcp/" \
@@ -504,7 +568,7 @@ docker run --rm -p 8000:8000 \
   -e NEO4J_USERNAME="neo4j" \
   -e NEO4J_PASSWORD="password" \
   -e NEO4J_DATABASE="neo4j" \
-  -e NEO4J_TRANSPORT="http" \
+  -e NEO4J_TRANSPORT="streamable-http" \
   -e NEO4J_MCP_SERVER_HOST="0.0.0.0" \
   -e NEO4J_MCP_SERVER_PORT="8000" \
   -e NEO4J_MCP_SERVER_PATH="/mcp/" \
@@ -521,7 +585,7 @@ docker run --rm -p 8000:8000 \
 | `NEO4J_USERNAME`                   | `neo4j`                                 | Neo4j username                                     |
 | `NEO4J_PASSWORD`                   | `password`                              | Neo4j password                                     |
 | `NEO4J_DATABASE`                   | `neo4j`                                 | Neo4j database name                                |
-| `NEO4J_TRANSPORT`                  | `stdio` (local), `http` (remote)        | Transport protocol (`stdio`, `http`, or `sse`)     |
+| `NEO4J_TRANSPORT`                  | `stdio` (local), `streamable-http` (remote) | Transport protocol (`stdio`, `streamable-http`, or `sse`; `http` kept as alias) |
 | `NEO4J_NAMESPACE`                  | _(empty)_                               | Tool namespace prefix                              |
 | `NEO4J_MCP_SERVER_HOST`            | `127.0.0.1` (local)                     | Host to bind to                                    |
 | `NEO4J_MCP_SERVER_PORT`            | `8000`                                  | Port for HTTP/SSE transport                        |
@@ -587,7 +651,7 @@ services:
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=password
       - NEO4J_DATABASE=neo4j
-      - NEO4J_TRANSPORT=http
+      - NEO4J_TRANSPORT=streamable-http
       - NEO4J_MCP_SERVER_HOST=0.0.0.0 # must be 0.0.0.0 for sse  or http transport in Docker
       - NEO4J_MCP_SERVER_PORT=8000
       - NEO4J_MCP_SERVER_PATH=/api/mcp/

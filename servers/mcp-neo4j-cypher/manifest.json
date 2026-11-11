@@ -52,11 +52,43 @@
       "description": "Execute write Cypher queries (CREATE, MERGE, SET, DELETE, etc.) on the Neo4j database"
     },
     {
-      "name": "get_db_labels",
+      "name": "get_all_labels",
       "description": "Return all labels present in the Neo4j database"
     },
     {
-      "name": "get_coreConcept",
+      "name": "get_node_by_element_id",
+      "description": "Return one node by its Neo4j elementId"
+    },
+    {
+      "name": "get_nodes_by_element_ids",
+      "description": "Return multiple nodes by their Neo4j elementIds"
+    },
+    {
+      "name": "find_nodes_by_label",
+      "description": "Return nodes matching a label name, case-insensitively"
+    },
+    {
+      "name": "get_directly_related_nodes_by_element_id",
+      "description": "Return nodes directly connected to a Neo4j elementId"
+    },
+    {
+      "name": "get_node_attributes_by_element_id",
+      "description": "Return labels and properties for a Neo4j elementId"
+    },
+    {
+      "name": "get_modelization_context_by_element_id",
+      "description": "Return modelizationClass and first-level incoming/outgoing relationships for a Neo4j elementId"
+    },
+    {
+      "name": "get_specialization_parents_by_element_id",
+      "description": "Return specialization parents for a Neo4j elementId"
+    },
+    {
+      "name": "get_specialization_children_by_element_id",
+      "description": "Return specialization children for a Neo4j elementId"
+    },
+    {
+      "name": "get_core_concept",
       "description": "Return coreConcept nodes as JSON objects"
     },
     {
@@ -64,7 +96,7 @@
       "description": "Return an APOC-derived schema snapshot"
     },
     {
-      "name": "neo4j_vector_search",
+      "name": "vector_search",
       "description": "Perform a vector similarity search against a Neo4j vector index"
     }
   ],

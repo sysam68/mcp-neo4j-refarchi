@@ -17,7 +17,7 @@
 * Replace `neo4j_schema_snapshot` prompt with a tool of the same name
 
 ### Added
-* Add `get_db_labels`, `get_coreConcept`, and `neo4j_schema_snapshot` read-only tools
+* Add `get_all_labels`, `get_core_concept`, and `neo4j_schema_snapshot` read-only tools
 * Add `resource://neo4j/refarchi` and `neo4j_refarchi_prompt` for usage guidance
 
 ## v0.5.1

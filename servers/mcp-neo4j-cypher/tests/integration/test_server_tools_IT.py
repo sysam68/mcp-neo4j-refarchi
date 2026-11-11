@@ -22,6 +22,17 @@ def _ensure_text(value: str | bytes) -> str:
     return value
 
 
+def _resource_text(result: Any) -> str:
+    if isinstance(result, str | bytes):
+        return _ensure_text(result)
+    contents = getattr(result, "contents", None) or []
+    assert contents
+    content = contents[0]
+    value = getattr(content, "content", None)
+    assert isinstance(value, str)
+    return value
+
+
 def _prompt_names(mcp_server: FastMCP) -> list[str]:
     manager = getattr(mcp_server, "_prompt_manager", None)
     if manager is None:
@@ -39,30 +50,13 @@ def _prompt_names(mcp_server: FastMCP) -> list[str]:
 
 
 async def _resource_uris(mcp_server: FastMCP) -> list[str]:
-    manager = getattr(mcp_server, "_resource_manager", None)
-    if manager is None:
-        return []
     uris: list[str] = []
-    for attr in ("resources", "_resources"):
-        value = getattr(manager, attr, None)
-        if isinstance(value, dict):
-            uris.extend(value.keys())
-    for attr in (
-        "templates",
-        "_templates",
-        "resource_templates",
-        "_resource_templates",
-    ):
-        value = getattr(manager, attr, None)
-        if isinstance(value, dict):
-            uris.extend(_template_uris(value.values()))
-    list_resources = getattr(manager, "list_resources", None)
-    if callable(list_resources):
-        resources = list_resources()
-        if asyncio.iscoroutine(resources):
-            resources = await resources
-        if isinstance(resources, list):
-            uris.extend([resource.uri for resource in resources])
+    resources = await mcp_server.list_resources()
+    if isinstance(resources, list):
+        uris.extend([str(resource.uri) for resource in resources])
+    templates = await mcp_server.list_resource_templates()
+    if isinstance(templates, list):
+        uris.extend(_template_uris(templates))
     return sorted(set(uris))
 
 
@@ -78,18 +72,26 @@ def _template_uris(templates: Any) -> list[str]:
 @pytest.mark.asyncio(loop_scope="function")
 async def test_tool_registration(mcp_server: FastMCP):
     for name in (
-        "get_db_labels",
-        "get_coreConcept",
+        "get_all_labels",
+        "get_node_by_element_id",
+        "get_nodes_by_element_ids",
+        "find_nodes_by_label",
+        "get_directly_related_nodes_by_element_id",
+        "get_node_attributes_by_element_id",
+        "get_modelization_context_by_element_id",
+        "get_specialization_parents_by_element_id",
+        "get_specialization_children_by_element_id",
+        "get_core_concept",
         "neo4j_schema_snapshot",
-        "neo4j_vector_search",
+        "vector_search",
     ):
         tool = await mcp_server.get_tool(name)
         assert tool is not None
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_get_db_labels_tool(mcp_server: FastMCP, init_data: Any):
-    tool = await mcp_server.get_tool("get_db_labels")
+async def test_get_all_labels_tool(mcp_server: FastMCP, init_data: Any):
+    tool = await mcp_server.get_tool("get_all_labels")
     response = await tool.run({})
 
     result = json.loads(_content_text(response))
@@ -98,13 +100,286 @@ async def test_get_db_labels_tool(mcp_server: FastMCP, init_data: Any):
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_get_db_labels_empty_returns_array(mcp_server: FastMCP, clear_data: Any):
-    tool = await mcp_server.get_tool("get_db_labels")
+async def test_get_all_labels_empty_returns_array(mcp_server: FastMCP, clear_data: Any):
+    tool = await mcp_server.get_tool("get_all_labels")
     response = await tool.run({})
 
     result = json.loads(_content_text(response))
 
     assert result == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_node_by_element_id_tool(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": "CREATE (:Asset {name: 'AssetB', status: 'draft'}) RETURN 1",
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": (
+                "MATCH (n:Asset {name: 'AssetB'}) "
+                "RETURN elementId(n) AS id LIMIT 1"
+            ),
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_node_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert result["id"] == element_id
+    assert "Asset" in result["labels"]
+    assert result["properties"]["status"] == "draft"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_nodes_by_element_ids_tool(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (:Asset {name: 'AssetC', status: 'draft'}) "
+                "CREATE (:Asset {name: 'AssetD', status: 'active'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": (
+                "MATCH (n:Asset) "
+                "WHERE n.name IN ['AssetC', 'AssetD'] "
+                "RETURN n.name AS name, elementId(n) AS id "
+                "ORDER BY name"
+            ),
+            "params": {},
+        }
+    )
+    rows = json.loads(_content_text(response))
+    element_ids = [row["id"] for row in rows]
+
+    tool = await mcp_server.get_tool("get_nodes_by_element_ids")
+    response = await tool.run({"element_ids": element_ids + ["missing-id"]})
+    result = json.loads(_content_text(response))
+
+    assert result[0]["id"] == element_ids[0]
+    assert result[0]["properties"]["name"] == "AssetC"
+    assert result[1]["id"] == element_ids[1]
+    assert result[1]["properties"]["name"] == "AssetD"
+    assert result[2] is None
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_find_nodes_by_label_tool(mcp_server: FastMCP, init_data: Any):
+    tool = await mcp_server.get_tool("find_nodes_by_label")
+    response = await tool.run({"label": "person"})
+    result = json.loads(_content_text(response))
+
+    assert any("Person" in node.get("labels", []) for node in result)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_directly_related_nodes_by_element_id_tool(
+    mcp_server: FastMCP, clear_data: Any
+):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (source:Component {name: 'SourceTool'})"
+                "-[:DEPENDS_ON {critical: true}]->"
+                "(target:Component {name: 'TargetTool'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": (
+                "MATCH (n:Component {name: 'SourceTool'}) "
+                "RETURN elementId(n) AS id LIMIT 1"
+            ),
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_directly_related_nodes_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert len(result) == 1
+    assert result[0]["relationship_type"] == "DEPENDS_ON"
+    assert result[0]["node"]["properties"]["name"] == "TargetTool"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_node_attributes_by_element_id_tool(
+    mcp_server: FastMCP, clear_data: Any
+):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+    await write_tool.run(
+        {
+            "query": "CREATE (:Asset {name: 'AssetAttrs', status: 'active'}) RETURN 1",
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": (
+                "MATCH (n:Asset {name: 'AssetAttrs'}) "
+                "RETURN elementId(n) AS id LIMIT 1"
+            ),
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_node_attributes_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert result["id"] == element_id
+    assert result["properties"]["status"] == "active"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_modelization_context_by_element_id_tool(
+    mcp_server: FastMCP, clear_data: Any
+):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (source:Concept {name: 'SourceNode', label: 'Source Label', modelizationClass: 'ApplicationComponent'}) "
+                "CREATE (target:Concept {name: 'TargetNode', label: 'Target Label', modelizationClass: 'BusinessService'}) "
+                "CREATE (upstream:Concept {name: 'UpstreamNode', label: 'Upstream Label', modelizationClass: 'BusinessActor'}) "
+                "CREATE (source)-[:SERVES]->(target) "
+                "CREATE (upstream)-[:TRIGGERS]->(source) "
+                "RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": (
+                "MATCH (n:Concept {name: 'SourceNode'}) "
+                "RETURN elementId(n) AS id LIMIT 1"
+            ),
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_modelization_context_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert result["node"]["id"] == element_id
+    assert result["node"]["label"] == "Source Label"
+    assert result["node"]["name"] == "SourceNode"
+    assert result["node"]["modelizationClass"] == "ApplicationComponent"
+    assert len(result["outgoing_relationships"]) == 1
+    assert result["outgoing_relationships"][0]["relationship_type"] == "SERVES"
+    assert result["outgoing_relationships"][0]["direction"] == "outgoing"
+    assert result["outgoing_relationships"][0]["target"]["label"] == "Target Label"
+    assert result["outgoing_relationships"][0]["target"]["name"] == "TargetNode"
+    assert (
+        result["outgoing_relationships"][0]["target"]["modelizationClass"]
+        == "BusinessService"
+    )
+    assert len(result["incoming_relationships"]) == 1
+    assert result["incoming_relationships"][0]["relationship_type"] == "TRIGGERS"
+    assert result["incoming_relationships"][0]["direction"] == "incoming"
+    assert result["incoming_relationships"][0]["source"]["label"] == "Upstream Label"
+    assert result["incoming_relationships"][0]["source"]["name"] == "UpstreamNode"
+    assert (
+        result["incoming_relationships"][0]["source"]["modelizationClass"]
+        == "BusinessActor"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_specialization_parents_by_element_id_tool(
+    mcp_server: FastMCP, clear_data: Any
+):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (a:Concept {name: 'ATool'})"
+                "-[:SpecializationRelationships]->"
+                "(b:Concept {name: 'BTool'})"
+                "-[:SpecializationRelationships]->"
+                "(c:Concept {name: 'CTool'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": "MATCH (n:Concept {name: 'ATool'}) RETURN elementId(n) AS id LIMIT 1",
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_specialization_parents_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert [row["node"]["properties"]["name"] for row in result] == ["BTool", "CTool"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_get_specialization_children_by_element_id_tool(
+    mcp_server: FastMCP, clear_data: Any
+):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (a:Concept {name: 'AChildTool'})"
+                "-[:SpecializationRelationships]->"
+                "(b:Concept {name: 'BChildTool'})"
+                "-[:SpecializationRelationships]->"
+                "(c:Concept {name: 'CChildTool'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": "MATCH (n:Concept {name: 'CChildTool'}) RETURN elementId(n) AS id LIMIT 1",
+            "params": {},
+        }
+    )
+    element_id = json.loads(_content_text(response))[0]["id"]
+
+    tool = await mcp_server.get_tool("get_specialization_children_by_element_id")
+    response = await tool.run({"element_id": element_id})
+    result = json.loads(_content_text(response))
+
+    assert [row["node"]["properties"]["name"] for row in result] == [
+        "BChildTool",
+        "AChildTool",
+    ]
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -118,7 +393,7 @@ async def test_get_core_concept_tool(mcp_server: FastMCP, clear_data: Any):
         }
     )
 
-    tool = await mcp_server.get_tool("get_coreConcept")
+    tool = await mcp_server.get_tool("get_core_concept")
     response = await tool.run({})
 
     result = json.loads(_content_text(response))
@@ -145,7 +420,7 @@ async def test_neo4j_schema_snapshot_tool(mcp_server: FastMCP, init_data: Any):
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_neo4j_vector_search_with_embedding(mcp_server: FastMCP, clear_data: Any):
+async def test_vector_search_with_embedding(mcp_server: FastMCP, clear_data: Any):
     write_tool = await mcp_server.get_tool("write_neo4j_cypher")
 
     try:
@@ -176,7 +451,7 @@ async def test_neo4j_vector_search_with_embedding(mcp_server: FastMCP, clear_dat
             pytest.skip("Vector index procedures not available in this Neo4j version.")
         raise
 
-    tool = await mcp_server.get_tool("neo4j_vector_search")
+    tool = await mcp_server.get_tool("vector_search")
     response = await tool.run(
         {
             "index_name": "vec_all_nodes_embedding",
@@ -222,10 +497,8 @@ async def test_schema_snapshot_boundary_sample_size(
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_label_resource_case_insensitive(mcp_server: FastMCP, init_data: Any):
-    raw = await mcp_server._resource_manager.read_resource(  # pylint: disable=protected-access
-        "resource://neo4j/labels/person"
-    )
-    result = json.loads(raw)
+    raw = await mcp_server.read_resource("resource://neo4j/labels/person")
+    result = json.loads(_resource_text(raw))
 
     assert any("Person" in node.get("labels", []) for node in result)
 
@@ -234,12 +507,156 @@ async def test_label_resource_case_insensitive(mcp_server: FastMCP, init_data: A
 async def test_label_resource_missing_label_returns_empty_array(
     mcp_server: FastMCP,
 ):
-    raw = await mcp_server._resource_manager.read_resource(  # pylint: disable=protected-access
-        "resource://neo4j/labels/NoSuchLabel"
-    )
-    result = json.loads(raw)
+    raw = await mcp_server.read_resource("resource://neo4j/labels/NoSuchLabel")
+    result = json.loads(_resource_text(raw))
 
     assert result == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_related_nodes_resource(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (source:Component {name: 'Source'})"
+                "-[:DEPENDS_ON {critical: true}]->"
+                "(target:Component {name: 'Target'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+                "query": (
+                    "MATCH (n:Component {name: 'Source'}) "
+                    "RETURN elementId(n) AS id LIMIT 1"
+                ),
+            "params": {},
+        }
+    )
+    source_id = json.loads(_content_text(response))[0]["id"]
+
+    raw = await mcp_server.read_resource(
+        f"resource://neo4j/nodes/{source_id}/related-nodes"
+    )
+    result = json.loads(_resource_text(raw))
+
+    assert len(result) == 1
+    assert result[0]["relationship_type"] == "DEPENDS_ON"
+    assert result[0]["direction"] == "outgoing"
+    assert result[0]["node"]["properties"]["name"] == "Target"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_node_attributes_resource(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": "CREATE (:Asset {name: 'AssetA', status: 'active'}) RETURN 1",
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": "MATCH (n:Asset {name: 'AssetA'}) RETURN elementId(n) AS id LIMIT 1",
+            "params": {},
+        }
+    )
+    node_id = json.loads(_content_text(response))[0]["id"]
+
+    raw = await mcp_server.read_resource(
+        f"resource://neo4j/nodes/{node_id}/attributes"
+    )
+    result = json.loads(_resource_text(raw))
+
+    assert result["id"] == node_id
+    assert "Asset" in result["labels"]
+    assert result["properties"]["status"] == "active"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_specialization_parents_resource(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (a:Concept {name: 'A'})"
+                "-[:SpecializationRelationships]->"
+                "(b:Concept {name: 'B'})"
+                "-[:SpecializationRelationships]->"
+                "(c:Concept {name: 'C'})"
+                "-[:SpecializationRelationships]->"
+                "(d:Concept {name: 'D'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": "MATCH (n:Concept {name: 'A'}) RETURN elementId(n) AS id LIMIT 1",
+            "params": {},
+        }
+    )
+    node_id = json.loads(_content_text(response))[0]["id"]
+
+    raw = await mcp_server.read_resource(
+        f"resource://neo4j/nodes/{node_id}/specialization-parents"
+    )
+    result = json.loads(_resource_text(raw))
+
+    assert [row["node"]["properties"]["name"] for row in result] == ["B", "C", "D"]
+    assert [row["depth"] for row in result] == [1, 2, 3]
+    assert all(
+        row["relationship_type"] == "SpecializationRelationships"
+        for row in result
+    )
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_specialization_children_resource(mcp_server: FastMCP, clear_data: Any):
+    write_tool = await mcp_server.get_tool("write_neo4j_cypher")
+    read_tool = await mcp_server.get_tool("read_neo4j_cypher")
+
+    await write_tool.run(
+        {
+            "query": (
+                "CREATE (a:Concept {name: 'A'})"
+                "-[:SpecializationRelationships]->"
+                "(b:Concept {name: 'B'})"
+                "-[:SpecializationRelationships]->"
+                "(c:Concept {name: 'C'})"
+                "-[:SpecializationRelationships]->"
+                "(d:Concept {name: 'D'}) RETURN 1"
+            ),
+            "params": {},
+        }
+    )
+    response = await read_tool.run(
+        {
+            "query": "MATCH (n:Concept {name: 'D'}) RETURN elementId(n) AS id LIMIT 1",
+            "params": {},
+        }
+    )
+    node_id = json.loads(_content_text(response))[0]["id"]
+
+    raw = await mcp_server.read_resource(
+        f"resource://neo4j/nodes/{node_id}/specialization-children"
+    )
+    result = json.loads(_resource_text(raw))
+
+    assert [row["node"]["properties"]["name"] for row in result] == ["C", "B", "A"]
+    assert [row["depth"] for row in result] == [1, 2, 3]
+    assert all(
+        row["relationship_type"] == "SpecializationRelationships"
+        for row in result
+    )
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -248,6 +665,10 @@ async def test_resources_list(mcp_server: FastMCP):
 
     assert resource_uris
     assert "resource://neo4j/labels/{label}" in resource_uris
+    assert "resource://neo4j/nodes/{node_id}/related-nodes" in resource_uris
+    assert "resource://neo4j/nodes/{node_id}/attributes" in resource_uris
+    assert "resource://neo4j/nodes/{node_id}/specialization-parents" in resource_uris
+    assert "resource://neo4j/nodes/{node_id}/specialization-children" in resource_uris
     assert "resource://neo4j/refarchi" in resource_uris
     assert "resource://neo4j/schema" not in resource_uris
     assert "resource://neo4j/labels" not in resource_uris
@@ -256,13 +677,14 @@ async def test_resources_list(mcp_server: FastMCP):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_refarchi_resource(mcp_server: FastMCP):
-    raw = await mcp_server._resource_manager.read_resource(  # pylint: disable=protected-access
-        "resource://neo4j/refarchi"
-    )
-    text = _ensure_text(raw)
+    raw = await mcp_server.read_resource("resource://neo4j/refarchi")
+    text = _resource_text(raw)
 
-    assert "get_db_labels" in text
+    assert "get_all_labels" in text
     assert "check_label_existance" in text
+    assert "get_modelization_context_by_element_id" in text
+    assert "resource://neo4j/nodes/{node_id}/related-nodes" in text
+    assert "resource://neo4j/nodes/{node_id}/specialization-children" in text
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -276,7 +698,7 @@ async def test_prompt_list(mcp_server: FastMCP):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_no_auth_tool_access(mcp_server: FastMCP, init_data: Any):
-    tool = await mcp_server.get_tool("get_db_labels")
+    tool = await mcp_server.get_tool("get_all_labels")
     response = await tool.run({})
 
     assert _content_text(response)
@@ -284,16 +706,14 @@ async def test_no_auth_tool_access(mcp_server: FastMCP, init_data: Any):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_no_auth_resource_access(mcp_server: FastMCP):
-    raw = await mcp_server._resource_manager.read_resource(  # pylint: disable=protected-access
-        "resource://neo4j/refarchi"
-    )
-    assert _ensure_text(raw)
+    raw = await mcp_server.read_resource("resource://neo4j/refarchi")
+    assert _resource_text(raw)
 
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_tool_error_json(async_neo4j_driver):
     mcp = create_mcp_server(async_neo4j_driver, database="missing")
-    tool = await mcp.get_tool("get_db_labels")
+    tool = await mcp.get_tool("get_all_labels")
 
     with pytest.raises(ToolError) as excinfo:
         await tool.run({})
@@ -304,7 +724,7 @@ async def test_tool_error_json(async_neo4j_driver):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_idempotent_open_world_behavior(mcp_server: FastMCP, init_data: Any):
-    tool = await mcp_server.get_tool("get_db_labels")
+    tool = await mcp_server.get_tool("get_all_labels")
     response_a = await tool.run({})
     response_b = await tool.run({})
 
