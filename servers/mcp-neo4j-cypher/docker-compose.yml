@@ -2,6 +2,10 @@ services:
   # Deploy Neo4j Database (optional)
   neo4j:
     image: neo4j:5.26.1 # or another version
+    labels:
+      obproject.network.layer: "N-999-DB"
+      obproject.ai.layer: "AI-999-DB"
+      obproject.arch.layer: "AR-999-DB"
     environment:
       - NEO4J_AUTH=neo4j/password
     ports:
@@ -13,6 +17,10 @@ services:
   # Deploy Cypher MCP Server
   mcp-neo4j-cypher-server:
     image: mcp/neo4j-cypher:latest
+    labels:
+      obproject.network.layer: "N-032-BACK"
+      obproject.ai.layer: "AI-022-MCP"
+      obproject.arch.layer: "AR-030-TOOLS"
     ports:
       - "8000:8000"
     environment:
@@ -32,4 +40,4 @@ services:
       - neo4j
 
 volumes:
-  neo4j_data: 
+  neo4j_data:
