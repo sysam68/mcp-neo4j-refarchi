@@ -11,6 +11,7 @@ import httpx
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.resources.base import ResourceContent, ResourceResult
 from fastmcp.server import FastMCP
+from fastmcp.server.auth import require_scopes
 from fastmcp.tools import ToolResult
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.types import (
@@ -33,6 +34,13 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import ClientDisconnect, Request
 
+from .auth import (
+    OIDCSettings,
+    READ_SCOPE,
+    WRITE_SCOPE,
+    RefArchiAuthorizationMiddleware,
+    build_auth_provider,
+)
 from .utils import _truncate_string_to_tokens, _value_sanitize
 
 logger = logging.getLogger("mcp_neo4j_cypher")
@@ -453,11 +461,18 @@ def create_mcp_server(
     embedding_base_url: Optional[str] = None,
     embedding_model: Optional[str] = None,
     embedding_timeout: int = 30,
+    auth_provider: Any = None,
 ) -> FastMCP:
     _patch_streamable_http_disconnect_handling()
     _patch_mcp_send_log_message()
 
-    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", stateless_http=True)
+    mcp: FastMCP = FastMCP("mcp-neo4j-cypher", auth=auth_provider)
+    read_authorization = (
+        require_scopes(READ_SCOPE) if auth_provider is not None else None
+    )
+    write_authorization = (
+        require_scopes(WRITE_SCOPE) if auth_provider is not None else None
+    )
 
     namespace_prefix = _format_namespace(namespace)
     allow_writes = not read_only
@@ -683,6 +698,7 @@ ORDER BY name
 
     @mcp.tool(
         name=namespace_prefix + "get_all_labels",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Neo4j Labels",
             readOnlyHint=True,
@@ -716,6 +732,7 @@ ORDER BY name
 
     @mcp.tool(
         name=namespace_prefix + "get_node_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Node By Element ID",
             readOnlyHint=True,
@@ -769,6 +786,7 @@ LIMIT 1
 
     @mcp.tool(
         name=namespace_prefix + "get_nodes_by_element_ids",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Nodes By Element IDs",
             readOnlyHint=True,
@@ -1000,6 +1018,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "find_nodes_by_label",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Find Nodes By Label",
             readOnlyHint=True,
@@ -1025,6 +1044,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_directly_related_nodes_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Directly Related Nodes By Element ID",
             readOnlyHint=True,
@@ -1055,6 +1075,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_node_attributes_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Node Attributes By Element ID",
             readOnlyHint=True,
@@ -1085,6 +1106,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_modelization_context_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Modelization Context By Element ID",
             readOnlyHint=True,
@@ -1118,6 +1140,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_specialization_parents_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Specialization Parents By Element ID",
             readOnlyHint=True,
@@ -1148,6 +1171,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_specialization_children_by_element_id",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get Specialization Children By Element ID",
             readOnlyHint=True,
@@ -1182,6 +1206,7 @@ ORDER BY depth, id
         title="Neo4j Label Nodes",
         description="Nodes matching a label name (case-insensitive).",
         mime_type="application/json",
+        auth=read_authorization,
     )
     async def neo4j_label_nodes(
         label: str = Field(
@@ -1212,6 +1237,7 @@ ORDER BY depth, id
         title="Directly Related Nodes",
         description="Nodes directly connected to the given node id.",
         mime_type="application/json",
+        auth=read_authorization,
     )
     async def neo4j_related_nodes(
         node_id: str = Field(
@@ -1241,6 +1267,7 @@ ORDER BY depth, id
         title="Node Attributes",
         description="All attributes for the given node id.",
         mime_type="application/json",
+        auth=read_authorization,
     )
     async def neo4j_node_attributes(
         node_id: str = Field(
@@ -1272,6 +1299,7 @@ ORDER BY depth, id
             "Parent nodes reached through outgoing SpecializationRelationships."
         ),
         mime_type="application/json",
+        auth=read_authorization,
     )
     async def neo4j_specialization_parents(
         node_id: str = Field(
@@ -1303,6 +1331,7 @@ ORDER BY depth, id
             "Child nodes reached through incoming SpecializationRelationships."
         ),
         mime_type="application/json",
+        auth=read_authorization,
     )
     async def neo4j_specialization_children(
         node_id: str = Field(
@@ -1332,6 +1361,7 @@ ORDER BY depth, id
         title="Neo4j Reference Architecture",
         description="Reference guidance for label lookup and schema access.",
         mime_type="text/plain",
+        auth=read_authorization,
     )
     async def neo4j_refarchi() -> ResourceResult:
         """Provide reference guidance for label lookup and schema access."""
@@ -1367,7 +1397,9 @@ ORDER BY depth, id
             "text/plain",
         )
 
-    @mcp.prompt(title="Neo4j Reference Architecture")
+    @mcp.prompt(
+        title="Neo4j Reference Architecture", auth=read_authorization
+    )
     def neo4j_refarchi_prompt() -> str:
         """Prompt helper to instruct agents to read the reference resource."""
         return (
@@ -1378,6 +1410,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "get_core_concept",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Get coreConcept Nodes",
             readOnlyHint=True,
@@ -1417,6 +1450,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "neo4j_schema_snapshot",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Neo4j Schema Snapshot",
             readOnlyHint=True,
@@ -1439,6 +1473,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + TOOL_NAMES["read"],
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Read Neo4j Cypher",
             readOnlyHint=True,
@@ -1495,6 +1530,7 @@ ORDER BY depth, id
 
     @mcp.tool(
         name=namespace_prefix + "vector_search",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Neo4j Vector Search",
             readOnlyHint=True,
@@ -1607,6 +1643,7 @@ RETURN elementId(node) AS id,
 
     @mcp.tool(
         name=namespace_prefix + "get_index_list",
+        auth=read_authorization,
         annotations=ToolAnnotations(
             title="Neo4j Vector Index List",
             readOnlyHint=True,
@@ -1636,6 +1673,7 @@ RETURN elementId(node) AS id,
     if allow_writes:
         @mcp.tool(
             name=namespace_prefix + TOOL_NAMES["write"],
+            auth=write_authorization,
             annotations=ToolAnnotations(
                 title="Write Neo4j Cypher",
                 readOnlyHint=False,
@@ -1709,6 +1747,8 @@ async def main(
     embedding_base_url: Optional[str] = None,
     embedding_model: Optional[str] = None,
     embedding_timeout: int = 30,
+    auth_mode: str = "none",
+    oidc_settings: OIDCSettings | None = None,
 ) -> None:
     logger.info("Starting MCP neo4j Server")
 
@@ -1729,6 +1769,21 @@ async def main(
         Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts),
     ]
 
+    http_path = path or "/mcp/"
+    auth_provider = None
+    if auth_mode == "oidc_bearer":
+        if oidc_settings is None:
+            await neo4j_driver.close()
+            raise RuntimeError("OIDC settings are required for oidc_bearer mode")
+        auth_provider = build_auth_provider(oidc_settings, http_path)
+        custom_middleware.append(
+            Middleware(
+                RefArchiAuthorizationMiddleware,
+                settings=oidc_settings,
+                mcp_path=http_path,
+            )
+        )
+
     try:
         mcp = create_mcp_server(
             neo4j_driver,
@@ -1741,6 +1796,7 @@ async def main(
             embedding_base_url,
             embedding_model,
             embedding_timeout,
+            auth_provider,
         )
     except Exception as exc:
         message = _format_startup_error(exc)
@@ -1753,7 +1809,6 @@ async def main(
         case "http" | "streamable-http":
             http_host = host or "127.0.0.1"
             http_port = port or 8000
-            http_path = path or "/mcp/"
             logger.info(
                 f"Running Neo4j Cypher MCP Server with streamable HTTP transport on {http_host}:{http_port}..."
             )

@@ -17,6 +17,12 @@ def main():
         default=None,
         help="Transport type (stdio, sse, streamable-http; http kept as alias)",
     )
+    parser.add_argument(
+        "--auth-mode",
+        choices=("none", "oidc_bearer"),
+        default=None,
+        help="Authentication mode (none is limited to stdio or loopback HTTP)",
+    )
     parser.add_argument("--namespace", default=None, help="Tool namespace")
     parser.add_argument(
         "--server-path", default=None, help="HTTP path (default: /mcp/)"

@@ -43,7 +43,7 @@ def test_fastmcp_constructor_uses_supported_signature(monkeypatch):
     assert mcp is not None
     assert captured["name"] == "mcp-neo4j-cypher"
     assert "dependencies" not in captured["kwargs"]
-    assert captured["kwargs"].get("stateless_http") is True
+    assert "stateless_http" not in captured["kwargs"]
 
 
 def test_format_startup_error_fastmcp_typeerror():

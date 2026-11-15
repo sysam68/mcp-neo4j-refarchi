@@ -890,6 +890,7 @@ dependencies = [
     { name = "httpx" },
     { name = "neo4j" },
     { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "tiktoken" },
 ]
 
@@ -909,6 +910,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "neo4j", specifier = ">=5.26.0" },
     { name = "pydantic", specifier = ">=2.10.1" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "tiktoken", specifier = ">=0.11.0" },
 ]
 
