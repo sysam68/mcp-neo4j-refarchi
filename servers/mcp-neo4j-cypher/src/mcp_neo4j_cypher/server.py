@@ -1817,6 +1817,7 @@ async def main(
                 port=http_port,
                 path=http_path,
                 middleware=custom_middleware,
+                json_response=auth_provider is not None,
                 stateless_http=True,
             )
         case "stdio":
