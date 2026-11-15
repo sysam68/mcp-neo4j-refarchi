@@ -94,6 +94,7 @@ class OIDCSettings:
     resource_url: str
     algorithms: tuple[str, ...]
     allowed_client_ids: tuple[str, ...]
+    write_client_ids: tuple[str, ...]
     required_groups: tuple[str, ...]
     max_token_lifetime_seconds: int = 3600
     clock_skew_seconds: int = 60
@@ -108,6 +109,7 @@ class OIDCSettings:
             resource_url=env.get("NEO4J_OAUTH_RESOURCE_URL", ""),
             algorithms=_csv(env.get("NEO4J_OIDC_ALLOWED_ALGORITHMS")) or ("RS256",),
             allowed_client_ids=_csv(env.get("NEO4J_OIDC_ALLOWED_CLIENT_IDS")),
+            write_client_ids=_csv(env.get("NEO4J_OIDC_WRITE_CLIENT_IDS")),
             required_groups=_csv(env.get("NEO4J_OIDC_REQUIRED_GROUPS")),
             max_token_lifetime_seconds=int(
                 env.get("NEO4J_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "3600")
@@ -137,6 +139,12 @@ class OIDCSettings:
         if not self.required_groups:
             raise SecurityConfigurationError(
                 "NEO4J_OIDC_REQUIRED_GROUPS must list approved groups"
+            )
+        if not self.write_client_ids or not set(self.write_client_ids).issubset(
+            set(self.allowed_client_ids)
+        ):
+            raise SecurityConfigurationError(
+                "NEO4J_OIDC_WRITE_CLIENT_IDS must be a non-empty subset of approved clients"
             )
         if not self.algorithms or set(self.algorithms) - ASYMMETRIC_ALGORITHMS:
             raise SecurityConfigurationError(
@@ -327,6 +335,8 @@ class RefArchiTokenVerifier(TokenVerifier):
             raise _RejectedToken("invalid_groups")
         client_id = _client_id(claims)
         scopes = _scopes(claims)
+        if client_id not in settings.write_client_ids:
+            scopes = [scope for scope in scopes if scope != WRITE_SCOPE]
         return AccessToken(
             token=_token_fingerprint(token),
             client_id=client_id,
@@ -401,6 +411,12 @@ class RefArchiAuthorizationMiddleware:
                     required_scope = WRITE_SCOPE
         if required_scope not in token_scopes:
             await self._deny(send, f"Required scope: {required_scope}")
+            return
+        if (
+            required_scope == WRITE_SCOPE
+            and access_token.client_id not in self.settings.write_client_ids
+        ):
+            await self._deny(send, "Client is not approved for write operations")
             return
         await self.app(scope, replay_receive, send)
 

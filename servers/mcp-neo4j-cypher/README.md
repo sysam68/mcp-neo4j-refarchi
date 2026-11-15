@@ -328,6 +328,7 @@ export NEO4J_OIDC_AUDIENCE=https://mcp.example.com/refarchi/api/mcp
 export NEO4J_OAUTH_RESOURCE_URL=https://mcp.example.com/refarchi/api/mcp
 export NEO4J_OIDC_ALLOWED_ALGORITHMS=RS256
 export NEO4J_OIDC_ALLOWED_CLIENT_IDS=codex-refarchi,claude-refarchi
+export NEO4J_OIDC_WRITE_CLIENT_IDS=codex-refarchi
 export NEO4J_OIDC_REQUIRED_GROUPS=users
 export NEO4J_MCP_SERVER_PATH=/api/mcp
 ```
@@ -337,6 +338,8 @@ audience, token lifetime, client identity, user group, and business scopes.
 `refarchi:read` protects discovery and read operations;
 `refarchi:write` is additionally required for write tools. Raw bearer tokens,
 subjects, and token identifiers are not retained after validation.
+Clients not listed in `NEO4J_OIDC_WRITE_CLIENT_IDS` remain read-only even when
+an OAuth client requests every scope advertised by protected-resource metadata.
 
 The protected-resource metadata endpoint is derived from the canonical
 resource URL, for example

@@ -36,6 +36,7 @@ SETTINGS = OIDCSettings(
     resource_url=RESOURCE,
     algorithms=("RS256",),
     allowed_client_ids=("codex-refarchi", "claude-refarchi"),
+    write_client_ids=("codex-refarchi",),
     required_groups=("users",),
 )
 ACCEPT = {
@@ -119,6 +120,7 @@ def test_security_configuration_is_fail_closed() -> None:
         "NEO4J_OIDC_AUDIENCE": RESOURCE,
         "NEO4J_OAUTH_RESOURCE_URL": RESOURCE,
         "NEO4J_OIDC_ALLOWED_CLIENT_IDS": "codex-refarchi,claude-refarchi",
+        "NEO4J_OIDC_WRITE_CLIENT_IDS": "codex-refarchi",
         "NEO4J_OIDC_REQUIRED_GROUPS": "users",
     }
     assert validate_auth_mode("oidc_bearer", "streamable-http", "0.0.0.0", environment)
@@ -132,6 +134,13 @@ def test_security_configuration_is_fail_closed() -> None:
             "streamable-http",
             "0.0.0.0",
             environment | {"NEO4J_OIDC_ALLOWED_CLIENT_IDS": ""},
+        )
+    with pytest.raises(SecurityConfigurationError, match="WRITE_CLIENT_IDS"):
+        validate_auth_mode(
+            "oidc_bearer",
+            "streamable-http",
+            "0.0.0.0",
+            environment | {"NEO4J_OIDC_WRITE_CLIENT_IDS": ""},
         )
     with pytest.raises(SecurityConfigurationError, match="asymmetric"):
         validate_auth_mode(
@@ -214,6 +223,22 @@ async def test_valid_token_is_sanitized_after_verification() -> None:
     assert access_token.claims == {"subject_verified": True, "groups": ["users"]}
     assert "user-123" not in repr(access_token)
     assert "token-123" not in repr(access_token)
+
+
+@pytest.mark.asyncio
+async def test_write_scope_is_retained_only_for_approved_clients() -> None:
+    claude = await verifier().verify_token(
+        mint(scopes=("refarchi:read", "refarchi:write"))
+    )
+    codex = await verifier().verify_token(
+        mint(
+            scopes=("refarchi:read", "refarchi:write"),
+            client_id="codex-refarchi",
+        )
+    )
+
+    assert claude is not None and claude.scopes == ["refarchi:read"]
+    assert codex is not None and codex.scopes == ["refarchi:read", "refarchi:write"]
 
 
 @pytest.mark.asyncio
