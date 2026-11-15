@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -96,6 +97,7 @@ class OIDCSettings:
     allowed_client_ids: tuple[str, ...]
     write_client_ids: tuple[str, ...]
     required_groups: tuple[str, ...]
+    ca_bundle: str | None = None
     max_token_lifetime_seconds: int = 3600
     clock_skew_seconds: int = 60
     jwks_cache_ttl_seconds: int = 300
@@ -111,6 +113,7 @@ class OIDCSettings:
             allowed_client_ids=_csv(env.get("NEO4J_OIDC_ALLOWED_CLIENT_IDS")),
             write_client_ids=_csv(env.get("NEO4J_OIDC_WRITE_CLIENT_IDS")),
             required_groups=_csv(env.get("NEO4J_OIDC_REQUIRED_GROUPS")),
+            ca_bundle=env.get("NEO4J_OIDC_CA_BUNDLE") or None,
             max_token_lifetime_seconds=int(
                 env.get("NEO4J_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "3600")
             ),
@@ -202,11 +205,18 @@ class _JwksResolver:
     def __init__(self, settings: OIDCSettings):
         self.settings = settings
         self._client: jwt.PyJWKClient | None = None
+        self._ssl_context = ssl.create_default_context()
+        if settings.ca_bundle:
+            self._ssl_context.load_verify_locations(cafile=settings.ca_bundle)
 
     def __call__(self, token: str) -> Any:
         if self._client is None:
             discovery = (
-                httpx.get(self.settings.discovery_url, timeout=10)
+                httpx.get(
+                    self.settings.discovery_url,
+                    timeout=10,
+                    verify=self._ssl_context,
+                )
                 .raise_for_status()
                 .json()
             )
@@ -221,6 +231,7 @@ class _JwksResolver:
                 cache_keys=True,
                 lifespan=self.settings.jwks_cache_ttl_seconds,
                 timeout=10,
+                ssl_context=self._ssl_context,
             )
         return self._client.get_signing_key_from_jwt(token).key
 

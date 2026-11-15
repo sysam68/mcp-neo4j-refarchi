@@ -330,6 +330,7 @@ export NEO4J_OIDC_ALLOWED_ALGORITHMS=RS256
 export NEO4J_OIDC_ALLOWED_CLIENT_IDS=codex-refarchi,claude-refarchi
 export NEO4J_OIDC_WRITE_CLIENT_IDS=codex-refarchi
 export NEO4J_OIDC_REQUIRED_GROUPS=users
+export NEO4J_OIDC_CA_BUNDLE=/etc/ssl/certs/platform-root-ca.pem
 export NEO4J_MCP_SERVER_PATH=/api/mcp
 ```
 

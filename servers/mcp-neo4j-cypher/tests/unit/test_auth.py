@@ -178,7 +178,7 @@ def test_discovery_metadata_selects_the_validated_jwks_uri(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "mcp_neo4j_cypher.auth.httpx.get",
-        lambda url, timeout: (
+        lambda url, timeout, verify: (
             observed.update(discovery_url=url, discovery_timeout=timeout)
             or DiscoveryResponse()
         ),
@@ -190,6 +190,7 @@ def test_discovery_metadata_selects_the_validated_jwks_uri(monkeypatch) -> None:
     assert observed["uri"] == f"{ISSUER}/jwks.json"
     assert observed["token"] == "signed-token"
     assert observed["options"]["lifespan"] == SETTINGS.jwks_cache_ttl_seconds
+    assert observed["options"]["ssl_context"] is not None
 
 
 def test_discovery_issuer_mismatch_is_rejected(monkeypatch) -> None:
