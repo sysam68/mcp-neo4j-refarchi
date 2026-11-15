@@ -438,6 +438,8 @@ async def test_http_transport_alias_still_starts(setup):
         "mcp-neo4j-cypher",
         "--transport",
         "http",
+        "--auth-mode",
+        "none",
         "--server-host",
         "127.0.0.1",
         "--server-port",

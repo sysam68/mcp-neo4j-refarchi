@@ -33,6 +33,17 @@ def clean_env():
         "NEO4J_RESPONSE_TOKEN_LIMIT",
         "NEO4J_READ_ONLY",
         "NEO4J_SCHEMA_SAMPLE_SIZE",
+        "NEO4J_AUTH_MODE",
+        "NEO4J_OIDC_ISSUER_URL",
+        "NEO4J_OIDC_DISCOVERY_URL",
+        "NEO4J_OIDC_AUDIENCE",
+        "NEO4J_OIDC_ALLOWED_ALGORITHMS",
+        "NEO4J_OIDC_ALLOWED_CLIENT_IDS",
+        "NEO4J_OIDC_REQUIRED_GROUPS",
+        "NEO4J_OIDC_MAX_TOKEN_LIFETIME_SECONDS",
+        "NEO4J_OIDC_CLOCK_SKEW_SECONDS",
+        "NEO4J_OIDC_JWKS_CACHE_TTL",
+        "NEO4J_OAUTH_RESOURCE_URL",
     ]
     # Store original values
     original_values = {}
@@ -60,6 +71,7 @@ def args_factory():
             "database": None,
             "namespace": None,
             "transport": None,
+            "auth_mode": "none",
             "server_host": None,
             "server_port": None,
             "server_path": None,
@@ -109,7 +121,7 @@ def sample_env_vars():
         "NEO4J_PASSWORD": "envpass",
         "NEO4J_DATABASE": "envdb",
         "NEO4J_TRANSPORT": "sse",
-        "NEO4J_MCP_SERVER_HOST": "envhost",
+        "NEO4J_MCP_SERVER_HOST": "localhost",
         "NEO4J_MCP_SERVER_PORT": "8080",
         "NEO4J_MCP_SERVER_PATH": "/env/",
         "NEO4J_NAMESPACE": "envnamespace",
@@ -169,7 +181,7 @@ def test_all_env_vars_provided(clean_env, set_env_vars, args_factory):
     assert config["password"] == "envpass"
     assert config["database"] == "envdb"
     assert config["transport"] == "sse"
-    assert config["host"] == "envhost"
+    assert config["host"] == "localhost"
     assert config["port"] == 8080
     assert config["path"] == "/env/"
     assert config["namespace"] == "envnamespace"
@@ -282,13 +294,13 @@ def test_non_stdio_transport_uses_defaults(clean_env, args_factory, mock_logger)
 def test_non_stdio_transport_with_server_config(clean_env, args_factory, mock_logger):
     """Test that non-stdio transport uses provided server config without warnings."""
     args = args_factory(
-        transport="sse", server_host="myhost", server_port=9999, server_path="/mypath/"
+        transport="sse", server_host="localhost", server_port=9999, server_path="/mypath/"
     )
 
     config = process_config(args)
 
     assert config["transport"] == "sse"
-    assert config["host"] == "myhost"
+    assert config["host"] == "localhost"
     assert config["port"] == 9999
     assert config["path"] == "/mypath/"
 

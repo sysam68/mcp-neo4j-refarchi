@@ -313,6 +313,39 @@ Choose your transport based on use case:
 
 The server includes comprehensive security protection with **secure defaults** that protect against common web-based attacks while preserving full MCP functionality when using HTTP transport.
 
+### OIDC bearer authorization for remote MCP
+
+Remote Streamable HTTP deployments are fail-closed by default. They must use
+`NEO4J_AUTH_MODE=oidc_bearer` and provide a complete OIDC resource-server
+profile. Unauthenticated mode is limited to STDIO or an explicitly configured
+loopback HTTP listener.
+
+```bash
+export NEO4J_AUTH_MODE=oidc_bearer
+export NEO4J_OIDC_ISSUER_URL=https://auth.example.com
+export NEO4J_OIDC_DISCOVERY_URL=https://auth.example.com/.well-known/openid-configuration
+export NEO4J_OIDC_AUDIENCE=https://mcp.example.com/refarchi/api/mcp
+export NEO4J_OAUTH_RESOURCE_URL=https://mcp.example.com/refarchi/api/mcp
+export NEO4J_OIDC_ALLOWED_ALGORITHMS=RS256
+export NEO4J_OIDC_ALLOWED_CLIENT_IDS=codex-refarchi,claude-refarchi
+export NEO4J_OIDC_WRITE_CLIENT_IDS=codex-refarchi
+export NEO4J_OIDC_REQUIRED_GROUPS=users
+export NEO4J_OIDC_CA_BUNDLE=/etc/ssl/certs/platform-root-ca.pem
+export NEO4J_MCP_SERVER_PATH=/api/mcp
+```
+
+The server validates discovery metadata, JWKS signatures, exact issuer and
+audience, token lifetime, client identity, user group, and business scopes.
+`refarchi:read` protects discovery and read operations;
+`refarchi:write` is additionally required for write tools. Raw bearer tokens,
+subjects, and token identifiers are not retained after validation.
+Clients not listed in `NEO4J_OIDC_WRITE_CLIENT_IDS` remain read-only even when
+an OAuth client requests every scope advertised by protected-resource metadata.
+
+The protected-resource metadata endpoint is derived from the canonical
+resource URL, for example
+`/.well-known/oauth-protected-resource/refarchi/api/mcp`.
+
 ### 🛡️ DNS Rebinding Protection
 
 **TrustedHost Middleware** validates Host headers to prevent DNS rebinding attacks:

@@ -6,6 +6,8 @@ from typing import Any, Union
 import tiktoken
 from neo4j.graph import Node
 
+from .auth import validate_auth_mode
+
 logger = logging.getLogger("mcp_neo4j_cypher")
 logger.setLevel(logging.INFO)
 
@@ -278,6 +280,18 @@ def process_config(args: argparse.Namespace) -> dict[str, Any]:
                 "Info: No allowed hosts provided. Defaulting to secure mode - only localhost and 127.0.0.1 allowed."
             )
             config["allowed_hosts"] = ["localhost", "127.0.0.1"]
+
+    auth_mode_arg = getattr(args, "auth_mode", None)
+    auth_mode = auth_mode_arg or os.getenv("NEO4J_AUTH_MODE")
+    if auth_mode is None:
+        auth_mode = "none" if config["transport"] == "stdio" else "oidc_bearer"
+    config["auth_mode"] = auth_mode.strip().lower()
+    config["oidc_settings"] = validate_auth_mode(
+        config["auth_mode"],
+        config["transport"],
+        config["host"],
+        dict(os.environ),
+    )
 
     # parse token limit
     if args.token_limit is not None:
